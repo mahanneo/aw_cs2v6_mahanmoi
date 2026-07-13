@@ -1,1661 +1,1313 @@
-local BASE        = rawget(_G, "FEMBOY_BASE") or "https://raw.githubusercontent.com/cachorropacoca/aw_cs2v6_mahanmoi/main/preview/"
-local GUILIB_URL  = BASE .. "mahanmoi_guilib.lua"
-local CHANGER_URL = BASE .. "mahanmoi_changer.lua"
+local ffi  = ffi
+local band, rshift, bxor, lshift = bit.band, bit.rshift, bit.bxor, bit.lshift
+local floor = math.floor
 
-local ffi = rawget(_G, "ffi")
+local off = {}
 
+local DUMPER = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/"
+
+local FIELDS = {
+    m_pWeaponServices      = "m_pWeaponServices",
+    m_hMyWeapons           = "m_hMyWeapons",
+    m_hActiveWeapon        = "m_hActiveWeapon",
+    m_AttributeManager     = { "m_AttributeManager", "C_EconEntity" },
+    m_Item                 = "m_Item",
+    m_pGameSceneNode       = "m_pGameSceneNode",
+    m_modelState           = { "m_modelState", "CSkeletonInstance" },
+    m_hModel               = { "m_hModel", "CModelState" },
+    m_nSubclassID          = "m_nSubclassID",
+    m_iTeamNum             = "m_iTeamNum",
+    m_iHealth              = "m_iHealth",
+    m_lifeState            = "m_lifeState",
+    m_hOwnerEntity         = "m_hOwnerEntity",
+    m_hPlayerPawn          = "m_hPlayerPawn",
+    m_steamID              = "m_steamID",
+    m_iItemDefinitionIndex = "m_iItemDefinitionIndex",
+    m_bRestoreCustomMat    = "m_bRestoreCustomMaterialAfterPrecache",
+    m_iEntityQuality       = "m_iEntityQuality",
+    m_iItemIDLow           = "m_iItemIDLow",
+    m_iItemIDHigh          = "m_iItemIDHigh",
+    m_iAccountID           = "m_iAccountID",
+    m_OriginalOwnerXuidLow = { "m_OriginalOwnerXuidLow", "C_EconEntity" },
+    m_bInitialized         = "m_bInitialized",
+    m_bDisallowSOC         = "m_bDisallowSOC",
+    m_AttributeList        = "m_AttributeList",
+    m_Attributes           = "m_Attributes",
+    m_nFallbackPaintKit    = { "m_nFallbackPaintKit", "C_EconEntity" },
+    m_nFallbackSeed        = { "m_nFallbackSeed", "C_EconEntity" },
+    m_flFallbackWear       = { "m_flFallbackWear", "C_EconEntity" },
+    m_nFallbackStatTrak    = { "m_nFallbackStatTrak", "C_EconEntity" },
+    m_EconGloves           = { "m_EconGloves", "C_CSPlayerPawn" },
+    m_bNeedToReApplyGloves = { "m_bNeedToReApplyGloves", "C_CSPlayerPawn" },
+
+}
+local function pull_offset(j, name, after)
+    local init = 1
+
+    if after then local p = j:find('"' .. after .. '"%s*:%s*{'); if p then init = p end end
+    local v = j:match('"' .. name .. '"%s*:%s*(%d+)', init)
+    return v and tonumber(v) or nil
+end
+pcall(function()
+    local j = http.Get(DUMPER .. "client_dll.json")
+    if type(j) ~= "string" then return end
+    for key, spec in pairs(FIELDS) do
+        local name, after = spec, nil
+        if type(spec) == "table" then name, after = spec[1], spec[2] end
+        local v = pull_offset(j, name, after)
+        if v then off[key] = v end
+    end
+end)
+off.m_szWorldModel = 48
+off.m_modelState = off.m_modelState or 336
+off.m_hModel     = off.m_hModel     or 160
+
+local function r_u8 (a) return ffi.cast("uint8_t*",  a)[0] end
+local function r_u16(a) return ffi.cast("uint16_t*", a)[0] end
+local function r_i32(a) return ffi.cast("int32_t*",  a)[0] end
+local function r_u32(a) return ffi.cast("uint32_t*", a)[0] end
+local function r_u64(a) return ffi.cast("uint64_t*", a)[0] end
 local function r_ptr(a) return tonumber(ffi.cast("uint64_t*", a)[0]) end
+local function w_u8 (a,v) ffi.cast("uint8_t*",  a)[0]=v end
+local function w_u16(a,v) ffi.cast("uint16_t*", a)[0]=v end
+local function w_i32(a,v) ffi.cast("int32_t*",  a)[0]=v end
+local function w_u32(a,v) ffi.cast("uint32_t*", a)[0]=v end
+local function w_u64(a,v) ffi.cast("uint64_t*", a)[0]=v end
+local function w_f32(a,v) ffi.cast("float*",    a)[0]=v end
 local function valid(p) return p ~= nil and p > 0x10000 and p < 0x7FFFFFFFFFFF end
+local function read_cstr(a, max)
+    if not valid(a) then return "" end
+    local t = {}
+    for i = 0, (max or 160) - 1 do
+        local c = r_u8(a + i); if c == 0 then break end
+        t[#t+1] = string.char(c)
+    end
+    return table.concat(t)
+end
 
-local SIG = {
-    vm = "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0",
+local function sig_rva(modBase, mod, pattern, instrLen)
+    if not modBase then return nil end
+    local a = mem.FindPattern(mod, pattern); if not a or a == 0 then return nil end
+    a = tonumber(a)
+    return (a + instrLen + r_i32(a + 3)) - modBase
+end
+local function sig_disp(mod, pattern)
+    local a = mem.FindPattern(mod, pattern); if not a or a == 0 then return nil end
+    return r_i32(tonumber(a) + 3)
+end
+-- cs2-dumper 2026-07-10 fallbacks (updated after CS2 patch)
+local FALLBACK_ENTITYLIST = 0x254EE60
+local FALLBACK_LOCALCTRL  = 0x237EBA0
+
+do
+    local cb = mem.GetModuleBase("client.dll")
+    local eb = mem.GetModuleBase("engine2.dll")
+
+    local ENTLIST_PATS = {
+        "48 8B 0D ?? ?? ?? ?? 48 89 7C 24 ?? 8B FA C1 EB",
+        "48 89 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? CC",
+    }
+    for _, pat in ipairs(ENTLIST_PATS) do
+        off.dwEntityList = sig_rva(cb, "client.dll", pat, 7)
+        if off.dwEntityList then break end
+    end
+    if not off.dwEntityList then
+        off.dwEntityList = FALLBACK_ENTITYLIST
+        print(string.format("[changer] entlist pattern miss, using fallback RVA 0x%X", FALLBACK_ENTITYLIST))
+    end
+
+    off.dwLocalPlayerController = sig_rva(cb, "client.dll", "48 8B 05 ?? ?? ?? ?? 41 89 BE", 7)
+    if not off.dwLocalPlayerController then
+        off.dwLocalPlayerController = FALLBACK_LOCALCTRL
+        print(string.format("[changer] localctrl pattern miss, using fallback RVA 0x%X", FALLBACK_LOCALCTRL))
+    end
+
+    off.dwNetworkGameClient     = sig_rva(eb, "engine2.dll", "48 89 3D ?? ?? ?? ?? FF 87", 7)
+    off.dwNetworkGameClient_signOnState = sig_disp("engine2.dll", "44 8B 81 ?? ?? ?? ?? 48 8D 0D")
+    if not off.dwLocalPlayerController or not off.dwEntityList or not off.m_hMyWeapons then
+        print("[changer] WARNING: signatures/netvars not resolved -- changer inactive")
+    else
+        print(string.format("[changer] sigs ok: entlist=%X ctrl=%X ngc=%s",
+            off.dwEntityList, off.dwLocalPlayerController,
+            off.dwNetworkGameClient and string.format("%X", off.dwNetworkGameClient) or "nil"))
+    end
+end
+
+local function tou32(x) x = x % 0x100000000; if x < 0 then x = x + 0x100000000 end; return x end
+local function mul32(a, b)
+    a = a % 0x100000000; b = b % 0x100000000
+    local ah, al = floor(a/0x10000), a%0x10000
+    local bh = floor(b/0x10000)
+    return (al*(b%0x10000) + ((al*bh + ah*(b%0x10000)) % 0x10000)*0x10000) % 0x100000000
+end
+local MM = 0x5bd1e995
+local function murmur2(str, seed)
+    local len = #str
+    local h = tou32(bxor(seed, len))
+    local i, rem = 1, len
+    while rem >= 4 do
+        local b0,b1,b2,b3 = str:byte(i, i+3)
+        local k = b0 + b1*256 + b2*65536 + b3*16777216
+        k = mul32(k, MM); k = tou32(bxor(k, rshift(k, 24))); k = mul32(k, MM)
+        h = mul32(h, MM); h = tou32(bxor(h, k))
+        i = i + 4; rem = rem - 4
+    end
+    if rem >= 3 then h = tou32(bxor(h, lshift(str:byte(i+2), 16))) end
+    if rem >= 2 then h = tou32(bxor(h, lshift(str:byte(i+1), 8))) end
+    if rem >= 1 then h = tou32(bxor(h, str:byte(i))); h = mul32(h, MM) end
+    h = tou32(bxor(h, rshift(h, 13))); h = mul32(h, MM); h = tou32(bxor(h, rshift(h, 15)))
+    return h
+end
+local function subclass_hash(def) return murmur2(tostring(def):lower(), 0x31415926) end
+
+local DLL = "client.dll"
+-- client.dll 
+local sig = {
+    set_model      = "40 53 48 83 EC ?? 48 8B D9 4C 8B C2 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 40",  -- CBaseModelEntity::SetModel
+    update_subclass= "4C 8B DC 53 48 81 EC ?? ?? ?? ?? 48 8B 41",                                 -- CEconItemView subclass refresh
+    set_mesh_mask  = "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8D 99 ?? ?? ?? ?? 48 8B 71", -- CSkeletonInstance mesh mask
+    regen_skins    = "48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 10",            -- regenerate custom skins
+}
+-- a + 5 + rel32 -> CBodyComponent::SetBodyGroup
+local SBG_SIG = "E8 ?? ?? ?? ?? EB 0C 48 8B CF"
+local fn, fnptr = {}, {}
+local function resolve()
+    for name, pattern in pairs(sig) do
+        if not fn[name] then local a = mem.FindPattern(DLL, pattern); if a and a ~= 0 then fn[name] = a end end
+    end
+    if not fn.set_body_group then
+        local a = mem.FindPattern(DLL, SBG_SIG)
+        if a and a ~= 0 then fn.set_body_group = a + 5 + r_i32(a + 1) end
+    end
+    if fn.set_model       and not fnptr.set_model       then fnptr.set_model       = ffi.cast("void(*)(void*, const char*)", fn.set_model) end
+    if fn.update_subclass and not fnptr.update_subclass then fnptr.update_subclass = ffi.cast("void(*)(void*)",              fn.update_subclass) end
+    if fn.set_mesh_mask   and not fnptr.set_mesh_mask   then fnptr.set_mesh_mask   = ffi.cast("void(*)(void*, uint64_t)",    fn.set_mesh_mask) end
+    if fn.regen_skins     and not fnptr.regen_skins     then fnptr.regen_skins     = ffi.cast("void(*)(void)",               fn.regen_skins) end
+    if fn.set_body_group  and not fnptr.set_body_group  then fnptr.set_body_group  = ffi.cast("void(*)(void*, const char*, unsigned int)", fn.set_body_group) end
+end
+local function vfunc(this, index)
+    if not valid(this) then return nil end
+    local vt = r_ptr(this); if not valid(vt) then return nil end
+    local f = r_ptr(vt + index*8); if not valid(f) then return nil end
+    return f
+end
+local function vcall_void(this, index)
+    local f = vfunc(this, index); if not f then return end
+    ffi.cast("void(*)(void*)", f)(ffi.cast("void*", this))
+end
+local function vcall_void_bool(this, index, b)
+    local f = vfunc(this, index); if not f then return end
+    ffi.cast("void(*)(void*, int)", f)(ffi.cast("void*", this), b and 1 or 0)
+end
+
+local KNIVES = {
+    { name = "Default (no swap)", def = nil },
+    { name = "Bayonet",        def = 500 }, { name = "Classic Knife",  def = 503 },
+    { name = "Flip Knife",     def = 505 }, { name = "Gut Knife",      def = 506 },
+    { name = "Karambit",       def = 507 }, { name = "M9 Bayonet",     def = 508 },
+    { name = "Huntsman",       def = 509 }, { name = "Falchion",       def = 512 },
+    { name = "Bowie Knife",    def = 514 }, { name = "Butterfly",      def = 515 },
+    { name = "Shadow Daggers", def = 516 }, { name = "Paracord Knife", def = 517 },
+    { name = "Survival Knife", def = 518 }, { name = "Ursus Knife",    def = 519 },
+    { name = "Navaja Knife",   def = 520 }, { name = "Nomad Knife",    def = 521 },
+    { name = "Stiletto",       def = 522 }, { name = "Talon Knife",    def = 523 },
+    { name = "Skeleton Knife", def = 525 }, { name = "Kukri Knife",    def = 526 },
+}
+local WEAPONS = {
+    { name = "AK-47",        def = 7  }, { name = "M4A4",         def = 16 },
+    { name = "M4A1-S",       def = 60 }, { name = "AWP",          def = 9  },
+    { name = "SSG 08",       def = 40 }, { name = "SCAR-20",      def = 38 },
+    { name = "G3SG1",        def = 11 }, { name = "SG 553",       def = 39 },
+    { name = "AUG",          def = 8  }, { name = "FAMAS",        def = 10 },
+    { name = "Galil AR",     def = 13 }, { name = "Desert Eagle", def = 1  },
+    { name = "R8 Revolver",  def = 64 }, { name = "Dual Berettas",def = 2  },
+    { name = "Five-SeveN",   def = 3  }, { name = "Glock-18",     def = 4  },
+    { name = "Tec-9",        def = 30 }, { name = "P2000",        def = 32 },
+    { name = "P250",         def = 36 }, { name = "USP-S",        def = 61 },
+    { name = "CZ75-Auto",    def = 63 }, { name = "MAC-10",       def = 17 },
+    { name = "P90",          def = 19 }, { name = "PP-Bizon",     def = 26 },
+    { name = "MP5-SD",       def = 23 }, { name = "MP7",          def = 33 },
+    { name = "MP9",          def = 34 }, { name = "UMP-45",       def = 24 },
+    { name = "M249",         def = 14 }, { name = "Negev",        def = 28 },
+    { name = "XM1014",       def = 25 }, { name = "MAG-7",        def = 27 },
+    { name = "Nova",         def = 35 }, { name = "Sawed-Off",    def = 29 },
+}
+local GLOVES = {
+    { name = "Default (off)",      def = 0    },
+    { name = "Bloodhound Gloves",  def = 5027 }, { name = "Sport Gloves",      def = 5030 },
+    { name = "Driver Gloves",      def = 5031 }, { name = "Hand Wraps",        def = 5032 },
+    { name = "Moto Gloves",        def = 5033 }, { name = "Specialist Gloves", def = 5034 },
+    { name = "Hydra Gloves",       def = 5035 }, { name = "Broken Fang Gloves",def = 4725 },
+}
+local function is_knife(def) return def == 42 or def == 59 or (def >= 500 and def <= 526) end
+
+local SKINS = {
+  [1]={{"Blaze",37},{"Blue Ply",945},{"Bronze Deco",425},{"Calligraffiti",114},{"Cobalt Disruption",231},{"Code Red",711},{"Conspiracy",351},{"Corinthian",509},{"Crimson Web",232},{"Directive",603},{"Emerald JГ¶rmungandr",757},{"Fennec Fox",764},{"Firebreathing",1430},{"Golden Koi",185},{"Hand Cannon",328},{"Heat Treated",1054},{"Heirloom",273},{"Hypnotic",61},{"Kumicho Dragon",527},{"Light Rail",841},{"Mecha Industries",805},{"Meteorite",296},{"Midnight Storm",468},{"Mint Fan",1257},{"Mudder",90},{"Mulberry",1318},{"Naga",397},{"Night",40},{"Night Heist",1006},{"Ocean Drive",1090},{"Oxide Blaze",645},{"Pilot",347},{"Printstream",962},{"Serpent Strike",1189},{"Sputnik",1056},{"Starcade",938},{"Sunset Storm еЈ±",469},{"Sunset Storm ејђ",470},{"The Bronze",992},{"The Daily Deagle",1360},{"Tilted",138},{"Trigger Discipline",1050},{"Urban DDPAT",17},{"Urban Rubble",237}},
+  [2]={{"Angel Eyes",1347},{"Anodized Navy",28},{"Balance",895},{"Black Limba",190},{"BorDeux",1335},{"Briar",330},{"Cartel",528},{"Cobalt Quartz",249},{"Cobra Strike",658},{"Colony",47},{"Contractor",46},{"Demolition",153},{"Dezastre",978},{"Drift Wood",824},{"Dualing Dragons",491},{"Duelist",447},{"Elite 1.6",903},{"Emerald",453},{"Flora Carnivora",1156},{"Heist",1005},{"Hemoglobin",220},{"Hideout",1169},{"Hydro Strike",112},{"Marina",261},{"Melondrama",1126},{"Moon in Libra",450},{"Oil Change",1086},{"Panther",276},{"Polished Malachite",1290},{"Pyre",860},{"Retribution",307},{"Rose Nacre",1263},{"Royal Consorts",625},{"Shred",710},{"Silver Pour",1373},{"Stained",43},{"Sweet Little Angels",139},{"Switch Board",998},{"Tread",1091},{"Twin Turbo",747},{"Urban Shock",396},{"Ventilators",544}},
+  [3]={{"Angry Mob",837},{"Anodized Gunmetal",210},{"Autumn Thicket",1336},{"Berries And Cherries",1002},{"Boost Protocol",1093},{"Buddy",906},{"Candy Apple",3},{"Capillary",646},{"Case Hardened",44},{"Contractor",46},{"Coolant",784},{"Copper Galaxy",274},{"Crimson Blossom",729},{"Dark Polymer",1429},{"Fairy Tale",979},{"Fall Hazard",1082},{"Flame Test",693},{"Forest Night",78},{"Fowl Play",352},{"Fraise Crane",1380},{"Heat Treated",831},{"Hot Shot",377},{"Hybrid",1168},{"Hyper Beast",660},{"Jungle",151},{"Kami",265},{"Midnight Paintover",1062},{"Monkey Business",427},{"Neon Kimono",464},{"Nightshade",223},{"Nitro",254},{"Orange Peel",141},{"Retrobution",510},{"Scrawl",1128},{"Scumbria",605},{"Silver Quartz",252},{"Sky Blue",1262},{"Triumvirate",530},{"Urban Hazard",387},{"Violent Daimyo",585},{"Withered Vine",932}},
+  [4]={{"AXIA",832},{"Block-18",1167},{"Blue Fissure",278},{"Brass",159},{"Bullet Queen",957},{"Bunsen Burner",479},{"Candy Apple",3},{"Catacombs",399},{"Clear Polymer",1039},{"Coral Bloom",1312},{"Death Rattle",293},{"Dragon Tattoo",48},{"Fade",38},{"Franklin",1016},{"Fully Tuned",1421},{"Gamma Doppler",1119},{"Gamma Doppler",1120},{"Gamma Doppler",1121},{"Gamma Doppler",1122},{"Gamma Doppler",1123},{"Glockingbird",1282},{"Gold Toof",129},{"Green Line",1200},{"Grinder",381},{"Groundwater",2},{"High Beam",799},{"Ironwork",623},{"Mirror Mosaic",1348},{"Moonrise",694},{"Neo-Noir",988},{"Night",40},{"Nuclear Garden",789},{"Ocean Topo",1265},{"Off World",680},{"Oxide Blaze",808},{"Pink DDPAT",84},{"Ramese's Reach",1240},{"Reactor",367},{"Red Tire",1079},{"Royal Legion",532},{"Sacrifice",918},{"Sand Dune",208},{"Shinobu",1208},{"Snack Attack",1100},{"Steel Disruption",230},{"Synth Leaf",732},{"Teal Graf",152},{"Trace Lock",1357},{"Twilight Galaxy",437},{"Umbral Rabbit",1227},{"Vogue",963},{"Warhawk",713},{"Wasteland Rebel",586},{"Water Elemental",353},{"Weasel",607},{"Winterized",1158},{"Wraiths",495}},
+  [7]={{"Aphrodite",1397},{"Aquamarine Revenge",474},{"Asiimov",801},{"B the Monster",142},{"Baroque Purple",745},{"Black Laminate",172},{"Bloodsport",639},{"Blue Laminate",226},{"Breakthrough",1358},{"Cartel",394},{"Case Hardened",44},{"Crane Flight",1425},{"Crossfade",912},{"Elite Build",422},{"Emerald Pinstripe",300},{"Fire Serpent",180},{"First Class",341},{"Frontside Misty",490},{"Fuel Injector",524},{"Gold Arabesque",921},{"Green Laminate",1070},{"Head Shot",1221},{"Hydroponic",456},{"Ice Coaled",1143},{"Inheritance",1171},{"Jaguar",316},{"Jet Set",340},{"Jungle Spray",122},{"Leet Museo",1087},{"Legion of Anubis",959},{"Midnight Laminate",1218},{"Neon Revolution",600},{"Neon Rider",707},{"Nightwish",1141},{"Nouveau Rouge",1309},{"Olive Polycam",1179},{"Orbit Mk01",656},{"Panthera onca",1018},{"Phantom Disruptor",941},{"Point Disarray",506},{"Predator",170},{"Rat Rod",885},{"Red Laminate",14},{"Redline",282},{"Safari Mesh",72},{"Safety Net",795},{"Searing Rage",1207},{"Slate",1035},{"Steel Delta",1238},{"The Empress",675},{"The Oligarch",1352},{"The Outsiders",113},{"Uncharted",836},{"VariCamo Grey",1288},{"Vulcan",302},{"Wasteland Rebel",380},{"Wild Lotus",724},{"Wintergreen",1283},{"X-Ray",1004}},
+  [8]={{"Akihabara Accept",455},{"Amber Fade",246},{"Amber Slipstream",708},{"Anodized Navy",197},{"Arctic Wolf",886},{"Aristocrat",583},{"Bengal Tiger",9},{"Carved Jade",1033},{"Chameleon",280},{"Colony",47},{"Commando Company",1308},{"Condemned",110},{"Contractor",46},{"Copperhead",10},{"Creep",1362},{"Daedalus",444},{"Death by Puppy",913},{"Eye of Zapems",134},{"Flame JГ¶rmungandr",758},{"Fleet Flock",541},{"Hot Rod",33},{"Lil' Pig",173},{"Luxe Trim",121},{"Midnight Lily",727},{"Momentum",845},{"Navy Murano",740},{"Plague",1088},{"Radiation Hazard",375},{"Random Access",779},{"Ricochet",507},{"Sand Storm",823},{"Snake Pit",1249},{"Spalted Wood",927},{"Steel Sentinel",1198},{"Storm",100},{"Stymphalian",690},{"Surveillance",995},{"Sweeper",794},{"Syd Mead",601},{"Tom Cat",942},{"Torque",305},{"Trigger Discipline",1339},{"Triqua",674},{"Wings",73}},
+  [9]={{"Acheron",788},{"Arsenic Spill",1324},{"Asiimov",279},{"Atheris",838},{"Black Nile",1239},{"BOOM",174},{"Capillary",943},{"Chromatic Aberration",1144},{"Chrome Cannon",1170},{"CMYK",163},{"Containment Breach",887},{"Corticera",181},{"Crakow!",137},{"Desert Hydra",819},{"Dragon Lore",344},{"Duality",1222},{"Electric Hive",227},{"Elite Build",525},{"Exoskeleton",975},{"Exothermic",1378},{"Fade",1026},{"Fever Dream",640},{"Graphite",212},{"Green Energy",1280},{"Gungnir",756},{"Hyper Beast",475},{"Ice Coaled",1346},{"Lightning Strike",51},{"LongDog",1213},{"Man-o'-war",395},{"Medusa",446},{"Mortis",691},{"Neo-Noir",803},{"Oni Taiji",662},{"PAW",718},{"Phobos",584},{"Pink DDPAT",84},{"Pit Viper",251},{"POP AWP",1058},{"Printstream",1206},{"Queen's Gambit",1422},{"Redline",259},{"Safari Mesh",72},{"Silk Tiger",1029},{"Snake Camo",30},{"Sun in Leo",451},{"The End",1356},{"The Prince",736},{"Wildfire",917},{"Worm God",424}},
+  [10]={{"2A2F",1202},{"Afterimage",154},{"Bad Trip",1184},{"Byproduct",1393},{"CaliCamo",240},{"Colony",47},{"Commemoration",919},{"Contrast Spray",22},{"Crypsis",835},{"Cyanospatter",92},{"Dark Water",60},{"Decommissioned",904},{"Djinn",429},{"Doomkitty",178},{"Eye of Athena",723},{"Faulty Wiring",1066},{"Grey Ghost",1321},{"Half Sleeve",461},{"Halftone Wash",882},{"Hexane",218},{"Macabre",659},{"Mecha Industries",626},{"Meltdown",1053},{"Meow 36",1146},{"Neural Net",477},{"Night Borre",863},{"Palm",1302},{"Prime Conspiracy",999},{"Pulse",260},{"Rapid Eye Movement",1127},{"Roll Cage",604},{"Sergeant",288},{"Spitfire",194},{"Styx",371},{"Sundown",869},{"Survivor Z",492},{"Teardown",244},{"Valence",529},{"Vendetta",1365},{"Waters of Nephthys",1241},{"Yeti Camo",1219},{"ZX Spectron",1092}},
+  [11]={{"Ancient Ritual",1034},{"Arctic Camo",6},{"Azure Zebra",229},{"Black Sand",891},{"Chronos",438},{"Contractor",46},{"Demeter",195},{"Desert Storm",8},{"Digital Mesh",980},{"Dream Glade",1129},{"Flux",493},{"Green Apple",294},{"Green Cell",1305},{"High Seas",712},{"Hunter",677},{"Jungle Dashed",147},{"Keeping Tabs",1095},{"Murky",382},{"New Roots",930},{"Orange Crash",545},{"Orange Kimono",465},{"Polar Camo",74},{"Red Jasper",1328},{"Safari Mesh",72},{"Scavenger",806},{"Stinger",628},{"The Executioner",511},{"VariCamo",235},{"Ventilator",606},{"Violet Murano",739}},
+  [13]={{"Acid Dart",1296},{"Akoben",842},{"Amber Fade",246},{"Aqua Terrace",460},{"Black Sand",629},{"Blue Titanium",216},{"CAUTION!",1071},{"Cerberus",379},{"Chatterbox",398},{"Chromatic Aberration",1038},{"Cold Fusion",790},{"Connexion",972},{"Control",1185},{"Crimson Tsunami",647},{"Destroyer",1147},{"Dusk Ruins",1032},{"Eco",428},{"Firefight",546},{"Galigator",1434},{"Green Apple",294},{"Grey Smoke",1275},{"Hunting Blind",241},{"Kami",308},{"Metallic Squeezer",239},{"NV",939},{"O-Ranger",1314},{"Orange DDPAT",83},{"Phoenix Blacklight",1013},{"Rainbow Spoon",1178},{"Robin's Egg",1264},{"Rocket Pop",478},{"Sage Spray",119},{"Sandstorm",264},{"Shattered",192},{"Signal",807},{"Sky Mandala",1383},{"Stone Cold",494},{"Sugar Rush",661},{"Tornado",101},{"Tuxedo",297},{"Urban Rubble",237},{"Vandal",981},{"VariCamo",235},{"Winter Forest",76}},
+  [14]={{"Aztec",902},{"Blizzard Marbleized",75},{"Bock Blocks",1435},{"Contrast Spray",22},{"Deep Relief",983},{"Downtown",1148},{"Emerald Poison Dart",648},{"Gator Mesh",243},{"Humidor",827},{"Hypnosis",120},{"Impact Drill",472},{"Jungle",151},{"Jungle DDPAT",202},{"Magma",266},{"Midnight Palm",933},{"Nebula Crusader",496},{"O.S.I.P.R.",1042},{"Predator",170},{"Sage Camo",1298},{"Shipping Forecast",452},{"Sleet",1370},{"Spectre",547},{"Spectrogram",875},{"Submerged",1242},{"System Lock",401},{"Warbird",900}},
+  [16]={{"Aeolian Dark",1364},{"Asiimov",255},{"Bullet Rain",155},{"Buzz Kill",632},{"Choppa",1210},{"Converter",793},{"Cyber Security",985},{"Dark Blossom",730},{"Daybreak",471},{"Desert Storm",8},{"Desert-Strike",336},{"Desolate Space",588},{"Etch Lord",1165},{"Evil Daimyo",480},{"Eye of Horus",1255},{"Faded Zebra",176},{"Full Throttle",1353},{"Global Offensive",993},{"Griffin",384},{"Hellfire",664},{"Hellish",1209},{"Howl",309},{"In Living Color",1041},{"Jungle Tiger",16},{"Magnesium",811},{"Mainframe",780},{"Modern Hunter",164},{"Naval Shred Camo",1266},{"Neo-Noir",695},{"Poly Mag",1149},{"Polysoup",874},{"Poseidon",449},{"Radiation Hazard",167},{"Red DDPAT",926},{"Royal Paladin",512},{"Sheet Lightning",1281},{"Spider Lily",1097},{"Steel Work",1313},{"Temukau",1228},{"The Battlestar",533},{"The Coalition",1063},{"The Emperor",844},{"Tooth Fairy",971},{"Tornado",101},{"Turbine",118},{"Urban DDPAT",17},{"X-Ray",215},{"Zirka",187},{"Zubastick",1432},{"йѕЌзЋ‹ (Dragon King)",400}},
+  [17]={{"Acid Hex",1295},{"Allure",965},{"Aloha",665},{"Amber Fade",246},{"Bronzer",1334},{"Button Masher",1045},{"Calf Skin",748},{"Candy Apple",3},{"Carnivore",589},{"Case Hardened",44},{"Cat Fight",1349},{"Classic Crate",908},{"Commuter",343},{"Copper Borre",761},{"Curse",310},{"Derailment",1204},{"Disco Tech",947},{"Echoing Sands",1244},{"Ensnared",1131},{"Fade",38},{"Gold Brick",1025},{"Graven",188},{"Heat",284},{"Hot Snakes",1009},{"Indigo",333},{"Lapis Gator",534},{"Last Dive",651},{"Light Box",1164},{"Malachite",402},{"Monkeyflage",1150},{"Neon Rider",433},{"Nuclear Garden",372},{"Oceanic",682},{"Palm",157},{"Pipe Down",812},{"Pipsqueak",140},{"Poplar Thicket",1285},{"Propaganda",1067},{"Rangeen",498},{"Red Filigree",742},{"SaibДЃ Oni",126},{"Sakkaku",1229},{"Sienna Damask",826},{"Silver",32},{"Snow Splash",1367},{"Stalker",898},{"Storm Camo",1269},{"Strats",1075},{"Surfwood",871},{"Tatter",337},{"Tornado",101},{"Toybox",1098},{"Ultraviolet",98},{"Urban DDPAT",17},{"Whitefish",840}},
+  [19]={{"Aeolian Light",1361},{"Ancient Earth",1020},{"Ash Wood",234},{"Asiimov",359},{"Astral JГ¶rmungandr",759},{"Attack Vector",936},{"Baroque Red",744},{"Blind Spot",228},{"Blue Tac",1277},{"Chopper",593},{"Cocoa Rampage",977},{"Cold Blooded",67},{"Death by Kitty",156},{"Death Grip",669},{"Deathgaze",1419},{"Desert DDPAT",925},{"Desert Halftone",1332},{"Desert Warfare",311},{"Elite Build",486},{"Emerald Dragon",182},{"Facility Negative",776},{"Fallout Warning",169},{"Freight",969},{"Glacier Mesh",111},{"Grim",611},{"Leather",342},{"Module",335},{"Mustard Gas",1291},{"Neoqueen",1233},{"Nostalgia",911},{"Off World",849},{"Randy Rush",127},{"Reef Grief",1256},{"Run and Hide",1000},{"Sand Spray",124},{"ScaraB Rush",1250},{"Schematic",1074},{"Scorched",175},{"Shallow Grave",636},{"Shapewood",516},{"Storm",100},{"Straight Dimes",1199},{"Sunset Lily",726},{"Teardown",244},{"Tiger Pit",1015},{"Traction",717},{"Trigon",283},{"Vent Rush",1154},{"Verdant Growth",828},{"Virus",20},{"Wash me",133},{"Wave Breaker",1190}},
+  [23]={{"Acid Wash",888},{"Agent",915},{"Autumn Twilly",1061},{"Bamboo Garden",872},{"Co-Processor",781},{"Condition Zero",986},{"Desert Strike",949},{"Dirt Drop",753},{"Focus",1344},{"Gauss",846},{"Gold Leaf",1294},{"Kitbash",974},{"Lab Rats",800},{"Lime Hex",1274},{"Liquidation",1231},{"Necro Jr.",1137},{"Neon Squeezer",161},{"Nitro",798},{"Oxide Oasis",923},{"Phosphor",810},{"Picnic",1385},{"Savannah Halftone",768},{"Snow Splash",1366},{"Statics",1180}},
+  [24]={{"Arctic Wolf",704},{"Blaze",37},{"Bone Pile",193},{"Briefing",615},{"Caramel",93},{"Carbon Fiber",70},{"Continuum",1351},{"Corporal",281},{"Crime Scene",1003},{"Crimson Foil",412},{"Day Lily",725},{"Delusion",392},{"Exposure",688},{"Facility Dark",778},{"Fade",879},{"Fallout Warning",169},{"Fragment",1426},{"Full Stop",250},{"Gold Bismuth",990},{"Grand Prix",436},{"Green Swirl",1303},{"Gunsmoke",15},{"Houndstooth",1008},{"Indigo",333},{"K.O. Factory",1194},{"Labyrinth",362},{"Late Night Transit",1203},{"Mechanism",1085},{"Metal Flowers",672},{"Minotaur's Labyrinth",441},{"Momentum",802},{"Moonrise",851},{"Motorized",1175},{"Mudder",90},{"Neo-Noir",131},{"Oscillator",1049},{"Plastique",916},{"Primal Saber",556},{"Riot",488},{"Roadblock",1157},{"Scaffold",652},{"Scorched",175},{"Urban DDPAT",17},{"Warm Blooded",1387},{"Wild Child",1236}},
+  [25]={{"Ancient Lore",1021},{"Banana Leaf",731},{"Black Tie",557},{"Blaze Orange",166},{"Blue Spruce",96},{"Blue Steel",42},{"Blue Tire",1078},{"Bone Machine",370},{"CaliCamo",240},{"Canvas Cloud",1333},{"Charter",994},{"Copperflage",1287},{"Elegant Vines",821},{"Entombed",970},{"Fallout Warning",169},{"Frost Borre",760},{"Grassland",95},{"Gum Wall Camo",1267},{"Halftone Shift",834},{"Heaven Guard",314},{"Hieroglyph",1254},{"Incinegator",850},{"Irezumi",1174},{"Jungle",205},{"Mockingbird",1182},{"Monster Melt",146},{"Oxide Blaze",706},{"Quicksilver",407},{"Red Leather",348},{"Red Python",320},{"Run Run Run",1201},{"Scumbria",505},{"Seasons",654},{"Slipstream",616},{"Solitude",1215},{"Teclu Burner",521},{"Tranquility",393},{"Urban Perforated",135},{"VariCamo Blue",238},{"Watchdog",1103},{"XoooM",1381},{"XOXO",1046},{"Ziggy",689},{"Zombie Offensive",1135}},
+  [26]={{"Anolis",829},{"Antique",306},{"Bamboo Print",457},{"Bizoom",1374},{"Blue Streak",13},{"Brass",159},{"Breaker Box",1083},{"Candy Apple",3},{"Carbon Fiber",70},{"Chemical Green",376},{"Cobalt Halftone",267},{"Cold Cell",770},{"Death Rattle",293},{"Embargo",884},{"Facility Sketch",775},{"Forest Leaves",25},{"Fuel Rod",508},{"Harvester",594},{"High Roller",676},{"Irradiated Alert",171},{"Judgement of Anubis",542},{"Jungle Slipstream",641},{"Lumen",1099},{"Modern Hunter",164},{"Night Ops",236},{"Night Riot",692},{"Osiris",349},{"Photic Zone",526},{"RMX",1418},{"Runic",973},{"Rust Coat",203},{"Sand Dashed",148},{"Seabird",873},{"Space Cat",1125},{"Thermal Currents",1392},{"Urban Dashed",149},{"Water Sigil",224},{"Wood Block Camo",1325}},
+  [27]={{"BI83 Spectrum",1089},{"Bulldozer",39},{"Carbon Fiber",70},{"Chainmail",327},{"Cinquedea",737},{"Cobalt Core",499},{"Copper Coated",1245},{"Copper Oxide",1306},{"Core Breach",787},{"Counter Terrace",462},{"Firestarter",385},{"Foresight",1132},{"Hard Water",666},{"Hazard",198},{"Heat",431},{"Heaven Guard",291},{"Insomnia",1220},{"Irradiated Alert",171},{"Justice",948},{"MAGnitude",1355},{"Memento",177},{"Metallic DDPAT",34},{"Monster Call",961},{"Navy Sheen",822},{"Petroglyph",608},{"Popdog",909},{"Praetorian",535},{"Prism Terrace",1072},{"Resupply",1188},{"Rust Coat",754},{"Sand Dune",99},{"Seabird",473},{"Silver",32},{"Sonar",633},{"Storm",100},{"SWAG-7",703},{"Wildwood",773}},
+  [28]={{"Anodized Navy",28},{"Army Sheen",298},{"Boroque Sand",920},{"Bratatat",317},{"Bulkhead",783},{"CaliCamo",240},{"Dazzle",610},{"Desert-Strike",355},{"dev_texture",1043},{"Drop Me",1152},{"Infrastructure",1080},{"Lionfish",698},{"Loudmouth",483},{"Man-o'-war",432},{"MjГ¶lnir",763},{"Nuclear Waste",369},{"Palm",201},{"Phoenix Stencil",1012},{"Power Loader",514},{"Prototype",950},{"Raw Ceramic",1300},{"Sour Grapes",1260},{"Terrain",285},{"Ultralight",958},{"Wall Bang",144}},
+  [29]={{"Amber Fade",246},{"Analog Input",1160},{"Apocalypto",953},{"Bamboo Shadow",458},{"Black Sand",814},{"Brake Light",797},{"Clay Ambush",1014},{"Copper",41},{"Crimson Batik",1391},{"Devourer",720},{"First Class",345},{"Forest DDPAT",5},{"Fubar",552},{"Full Stop",250},{"Fusion",1427},{"Highwayman",390},{"Irradiated Alert",171},{"Jungle Thicket",870},{"Kissв™ҐLove",1155},{"Limelight",596},{"Morris",673},{"Mosaico",204},{"Orange DDPAT",83},{"Origami",434},{"Parched",880},{"Runoff",1272},{"Rust Coat",323},{"Sage Spray",119},{"Serenity",405},{"Snake Camo",30},{"Spirit Board",1140},{"The Kraken",256},{"Wasteland Princess",638},{"Yorick",517},{"Zander",655}},
+  [30]={{"Army Mesh",242},{"Avalanche",520},{"Bamboo Forest",459},{"Bamboozle",839},{"Banana Leaf",1384},{"Blast From the Past",1024},{"Blue Blast",1279},{"Blue Titanium",216},{"Brass",159},{"Brother",964},{"Citric Acid",1322},{"Cracked Opal",684},{"Cut Out",671},{"Decimator",889},{"Flash Out",905},{"Fubar",816},{"Fuel Injector",614},{"Garter-9",1286},{"Groundwater",2},{"Hades",439},{"Ice Cap",599},{"Isaac",303},{"Jambiya",539},{"Mummy's Rot",1252},{"Nuclear Threat",179},{"Orange Murano",738},{"Ossified",36},{"Phoenix Chalk",1010},{"Raw Ceramic",1299},{"Re-Entry",555},{"Rebel",1235},{"Red Quartz",248},{"Remote Control",791},{"Rust Leaf",733},{"Safety Net",795},{"Sandstorm",289},{"Slag",1159},{"Snek-9",722},{"Terrace",463},{"Tiger Stencil",766},{"Titanium Bit",272},{"Tornado",206},{"Toxic",374},{"Urban DDPAT",17},{"VariCamo",235},{"Whiteout",1214}},
+  [31]={{"Charged Up",1205},{"Dragon Snore",292},{"Earth Mandala",1382},{"Electric Blue",1268},{"Olympus",1172},{"Swamp DDPAT",1297},{"Tosai",1183}},
+  [32]={{"Acid Etched",951},{"Amber Fade",246},{"Chainmail",327},{"Coach Class",346},{"Coral Halftone",878},{"Corticera",184},{"Dispatch",997},{"Fire Elemental",389},{"Gnarled",960},{"Granite Marbleized",21},{"Grassland",95},{"Grassland Leaves",104},{"Grip Tape",1359},{"Handgun",485},{"Imperial",515},{"Imperial Dragon",591},{"Ivory",357},{"Lifted Spirits",1138},{"Marsh",1292},{"Obsidian",894},{"Ocean Foam",211},{"Oceanic",550},{"Panther Camo",1019},{"Pathfinder",443},{"Pulse",338},{"Red FragCam",275},{"Red Wing",1342},{"Royal Baroque",1259},{"Scorpion",71},{"Silver",32},{"Space Race",1055},{"Sure Grip",1181},{"Turf",635},{"Urban Hazard",700},{"Wicked Sick",1224},{"Woodsman",667}},
+  [33]={{"Abyssal Apparition",1133},{"Akoben",649},{"Amberline",1436},{"Anodized Navy",28},{"Armor Core",423},{"Army Recon",245},{"Asterion",442},{"Astrolabe",940},{"Bloodsport",696},{"Cirrus",627},{"Coral Paisley",1386},{"Fade",752},{"Forest DDPAT",5},{"Full Stop",250},{"Groundwater",209},{"Guerrilla",1096},{"Gunsmoke",15},{"Impire",536},{"Just Smile",1163},{"Mischief",847},{"Motherboard",782},{"Nemesis",481},{"Neon Ply",893},{"Ocean Foam",213},{"Olive Plaid",365},{"Orange Peel",141},{"Powercore",719},{"Prey",935},{"Scorched",175},{"Short Ochre",1326},{"Skulls",11},{"Smoking Kills",1354},{"Special Delivery",500},{"Sunbaked",1246},{"Tall Grass",1023},{"Teal Blossom",728},{"Urban Hazard",354},{"Vault Heist",1007},{"Whiteout",102}},
+  [34]={{"Airlock",609},{"Arctic Tri-Tone",331},{"Army Sheen",298},{"Bee-Tron",1388},{"Bioleak",549},{"Black Sand",697},{"Broken Record",1341},{"Buff Blue",1278},{"Bulldozer",39},{"Capillary",715},{"Cobalt Paisley",1258},{"Dark Age",329},{"Dart",386},{"Deadly Poison",403},{"Dizzy",1375},{"Dry Season",199},{"Featherweight",1225},{"Food Chain",1037},{"Goo",679},{"Green Plaid",366},{"Hot Rod",33},{"Hydra",910},{"Hypnotic",61},{"Latte Rush",1211},{"Modest Threat",804},{"Mount Fuji",1094},{"Multi-Terrain",1330},{"Music Box",820},{"Nexus",1193},{"Old Roots",931},{"Orange Peel",141},{"Pandora's Box",448},{"Pine",1301},{"Rose Iron",262},{"Ruby Poison Dart",482},{"Sand Dashed",148},{"Sand Scale",630},{"Setting Sun",368},{"Shredded",1310},{"Slide",755},{"Stained Glass",867},{"Starlight Protector",1134},{"Storm",100},{"Urban Sovereign",1423},{"Wild Lily",734}},
+  [35]={{"Antique",286},{"Army Sheen",298},{"Baroque Orange",746},{"Blaze Orange",166},{"Bloomstick",62},{"Caged Steel",299},{"Candy Apple",3},{"Clear Polymer",987},{"Currents",1368},{"Dark Sigil",1162},{"Exo",590},{"Forest Leaves",25},{"Ghost Camo",225},{"Gila",634},{"Graphite",214},{"Green Apple",294},{"Hyper Beast",537},{"Interlock",1077},{"Koi",356},{"Mandrel",785},{"Marsh Grass",1331},{"Modern Hunter",164},{"Moon in Libra",450},{"Ocular",1350},{"Plume",890},{"Polar Mesh",107},{"Predator",170},{"Quick Sand",929},{"Rain Station",1337},{"Ranger",484},{"Red Quartz",248},{"Rising Skull",263},{"Rising Sun",1192},{"Rust Coat",323},{"Sand Dune",99},{"Sobek's Bite",1247},{"Tempest",191},{"Toy Soldier",716},{"Turquoise Pour",1261},{"Walnut",158},{"Wild Six",699},{"Windblown",1051},{"Wood Fired",809},{"Wurst HГ¶lle",145},{"Yorkshire",324}},
+  [36]={{"Apep's Curse",1248},{"Asiimov",551},{"Bengal Tiger",1030},{"Black & Tan",928},{"Bone Mask",27},{"Boreal Forest",77},{"Bullfrog",1345},{"Cartel",388},{"Cassette",968},{"Constructivist",1212},{"Contaminant",982},{"Contamination",373},{"Copper Oxide",1307},{"Crimson Kimono",466},{"Cyber Shell",1044},{"Dark Filigree",741},{"Digital Architect",1081},{"Drought",825},{"Epicenter",130},{"Exchanger",786},{"Facets",207},{"Facility Draft",777},{"Forest Night",78},{"Franklin",295},{"Gunsmoke",15},{"Hive",219},{"Inferno",907},{"Iron Clad",592},{"Kintsugi",1420},{"Mehndi",258},{"Metallic DDPAT",34},{"Mint Kimono",467},{"Modern Hunter",164},{"Muertos",404},{"Nevermore",813},{"Nuclear Threat",168},{"Plum Netting",1273},{"Re.built",1230},{"Red Rock",668},{"Red Tide",1315},{"Ripple",650},{"Sand Dune",99},{"Sedimentary",1317},{"See Ya Later",678},{"Sleet",1369},{"Small Game",774},{"Splash",162},{"Steel Disruption",230},{"Supernova",358},{"Undertow",271},{"Valence",426},{"Verdigris",848},{"Vino Primo",749},{"Visions",1153},{"Whiteout",102},{"Wingshot",501},{"X-Ray",125}},
+  [38]={{"Army Sheen",298},{"Assault",914},{"Bloodsport",597},{"Blueprint",642},{"Brass",159},{"Caged",1343},{"Carbon Fiber",70},{"Cardiac",391},{"Contractor",46},{"Crimson Web",232},{"Cyrex",312},{"Emerald",196},{"Enforcer",954},{"Fragments",1226},{"Green Marine",502},{"Grotto",406},{"Jungle Slipstream",685},{"Magna Carta",1028},{"Outbreak",518},{"Palm",157},{"Poultrygeist",1139},{"Powercore",612},{"Sand Mesh",116},{"Short Ochre",1327},{"Splash Jam",165},{"Stone Mosaico",865},{"Storm",100},{"Torn",896},{"Trail Blazer",117},{"Wild Berry",883},{"Zinc",1371}},
+  [39]={{"Aerial",598},{"Aloha",702},{"Anodized Navy",28},{"Army Sheen",298},{"Atlas",553},{"Barricade",861},{"Basket Halftone",1320},{"Berry Gel Coat",901},{"Bleached",934},{"Bulldozer",39},{"Candy Apple",864},{"Colony IV",897},{"Cyberforce",1234},{"Cyrex",487},{"Damascus Steel",247},{"Danger Close",815},{"Darkwing",955},{"Desert Blossom",765},{"Dragon Tech",1151},{"Fallout Warning",378},{"Gator Mesh",243},{"Hazard Pay",1084},{"Heavy Metal",1048},{"Hypnotic",61},{"Integrale",750},{"Lush Ruins",1022},{"Night Camo",1270},{"Ol' Rusty",966},{"Phantom",686},{"Pulse",287},{"Safari Print",1394},{"Tiger Moth",519},{"Tornado",101},{"Traveler",363},{"Triarch",613},{"Ultraviolet",98},{"Wave Spray",186},{"Waves Perforated",136}},
+  [40]={{"Abyss",361},{"Acid Fade",253},{"Azure Glyph",1251},{"Big Iron",503},{"Blood in the Water",222},{"Bloodshot",899},{"Blue Spruce",96},{"Blush Pour",1316},{"Calligrafaux",1379},{"Carbon Fiber",70},{"Dark Water",60},{"Death Strike",1052},{"Death's Head",670},{"Detour",319},{"Dezastre",1161},{"Dragonfire",624},{"Fever Dream",956},{"Ghost Crusader",554},{"Green Ceramic",1304},{"Grey Smoke",1271},{"Halftone Whorl",877},{"Hand Brake",751},{"Jungle Dashed",147},{"Lichen Dashed",26},{"Mainframe 001",967},{"Mayan Dreams",200},{"Memorial",1187},{"Necropos",538},{"Orange Filigree",743},{"Parallax",989},{"Prey",935},{"Rapid Transit",128},{"Red Stone",762},{"Sand Dune",99},{"Sans Comic",1372},{"Sea Calico",868},{"Slashed",304},{"Spring Twilly",1060},{"Threat Detected",996},{"Tiger Tear",1289},{"Tropical Storm",233},{"Turbo Peek",1101},{"Zeno",513}},
+  [60]={{"Atomic Alloy",301},{"Basilisk",383},{"Black Lotus",1166},{"Blood Tiger",217},{"Blue Phosphor",1017},{"Boreal Forest",77},{"Briefing",663},{"Bright Water",189},{"Chantico's Fire",548},{"Control Panel",792},{"Cyrex",360},{"Dark Water",60},{"Decimator",644},{"Electrum",1433},{"Emphorosaur-S",1223},{"Fade",1177},{"Fizzy POP",1059},{"Flashback",631},{"Glitched Paint",1311},{"Golden Coil",497},{"Guardian",257},{"Hot Rod",445},{"Hyper Beast",430},{"Icarus Fell",440},{"Imminent Danger",1073},{"Knight",326},{"Leaded Glass",681},{"Liquidation",1340},{"Master Piece",321},{"Mecha Industries",587},{"Moss Quartz",862},{"Mud-Spec",1243},{"Night Terror",1130},{"Nightmare",714},{"Nitro",254},{"Party Animal",1376},{"Player Two",946},{"Printstream",984},{"Rose Hex",1319},{"Solitude",1338},{"Stratosphere",1216},{"Vaporwave",106},{"VariCamo",235},{"Wash me plz",160},{"Welcome to the Jungle",1001}},
+  [61]={{"27",115},{"Alpine Camo",830},{"Ancient Visions",1031},{"Black Lotus",1102},{"Bleeding Edge",1323},{"Blood Tiger",217},{"Blueprint",657},{"Business Class",364},{"Caiman",339},{"Check Engine",796},{"Cortex",705},{"Cyrex",637},{"Dark Water",60},{"Desert Tactical",1253},{"Flashback",817},{"Forest Leaves",25},{"Guardian",290},{"Jawbreaker",1173},{"Kill Confirmed",504},{"Lead Conduit",540},{"Monster Mashup",991},{"Neo-Noir",653},{"Night Ops",236},{"Orange Anolis",922},{"Orion",313},{"Overgrowth",183},{"Para Green",454},{"Pathfinder",443},{"PC-GRN",1186},{"Printstream",1142},{"Purple DDPAT",818},{"Road Rash",318},{"Royal Blue",332},{"Royal Guard",1217},{"Serum",221},{"Silent Shot",1431},{"Sleeping Potion",1377},{"Stainless",277},{"Target Acquired",1027},{"The Traitor",1040},{"Ticket to Hell",1136},{"Torque",489},{"Tropical Breeze",1284},{"Whiteout",1065}},
+  [63]={{"Army Sheen",298},{"Chalice",325},{"Circaetus",1036},{"Copper Fiber",1195},{"Crimson Web",12},{"Distressed",944},{"Eco",709},{"Emerald",453},{"Emerald Quartz",859},{"Framework",1076},{"Green Plaid",366},{"Hexane",218},{"Honey Paisley",1390},{"Imprint",602},{"Indigo",333},{"Jungle Dashed",147},{"Midnight Palm",933},{"Nitro",322},{"Pink Pearl",1329},{"Poison Dart",315},{"Pole Position",435},{"Polymer",622},{"Red Astor",543},{"Silver",32},{"Slalom",937},{"Syndicate",1064},{"Tacticat",687},{"The Fuschia Is Now",269},{"Tigris",350},{"Tread Plate",268},{"Tuxedo",297},{"Twist",334},{"Vendetta",976},{"Victoria",270},{"Xiangliu",643},{"Yellow Jacket",476}},
+  [64]={{"Amber Fade",523},{"Banana Cannon",1232},{"Blaze",37},{"Bone Forged",952},{"Bone Mask",27},{"Canal Spray",866},{"Cobalt Grip",1276},{"Crazy 8",1145},{"Crimson Web",12},{"Dark Chamber",1363},{"Desert Brush",924},{"Fade",522},{"Grip",701},{"Inlay",1237},{"Junk Yard",1047},{"Leafhopper",1293},{"Llama Cannon",683},{"Mauve Aside",1389},{"Memento",892},{"Night",40},{"Nitro",798},{"Phoenix Marker",1011},{"Reboot",595},{"Skull Crusher",843},{"Survivalist",721},{"Tango",123}},
+  [500]={{"Autotronic",573},{"Black Laminate",563},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",578},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",580},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",558},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [503]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Fade",38},{"Forest DDPAT",5},{"Night Stripe",735},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Urban Masked",143}},
+  [505]={{"Autotronic",574},{"Black Laminate",564},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",578},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",580},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",559},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [506]={{"Autotronic",575},{"Black Laminate",565},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",578},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",580},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",560},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [507]={{"Autotronic",576},{"Black Laminate",566},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",578},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",582},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",561},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [508]={{"Autotronic",577},{"Black Laminate",567},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",579},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",411},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",581},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",562},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [509]={{"Autotronic",1117},{"Black Laminate",1112},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",579},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",411},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",581},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",1107},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",620},{"Urban Masked",143}},
+  [512]={{"Autotronic",1116},{"Black Laminate",1111},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",579},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",411},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",581},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",1106},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",621},{"Urban Masked",143}},
+  [514]={{"Autotronic",1114},{"Black Laminate",1109},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",579},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",411},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Freehand",581},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",1104},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [515]={{"Autotronic",1115},{"Black Laminate",1110},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",579},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",411},{"Doppler",617},{"Doppler",418},{"Doppler",618},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",619},{"Fade",38},{"Forest DDPAT",5},{"Freehand",581},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",1105},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [516]={{"Autotronic",1118},{"Black Laminate",1113},{"Blue Steel",42},{"Boreal Forest",77},{"Bright Water",579},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",411},{"Doppler",617},{"Doppler",418},{"Doppler",618},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",619},{"Fade",38},{"Forest DDPAT",5},{"Freehand",581},{"Gamma Doppler",568},{"Gamma Doppler",569},{"Gamma Doppler",570},{"Gamma Doppler",571},{"Gamma Doppler",572},{"Lore",1108},{"Marble Fade",413},{"Night",40},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [517]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",413},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",621},{"Urban Masked",143}},
+  [518]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",413},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [519]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",857},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",413},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [520]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",857},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",413},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [521]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",413},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [522]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",857},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",413},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [523]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",858},{"Doppler",417},{"Doppler",852},{"Doppler",853},{"Doppler",854},{"Doppler",855},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",856},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [525]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Damascus Steel",410},{"Doppler",417},{"Doppler",418},{"Doppler",419},{"Doppler",420},{"Doppler",421},{"Doppler",415},{"Doppler",416},{"Fade",38},{"Forest DDPAT",5},{"Marble Fade",413},{"Night Stripe",735},{"Rust Coat",414},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Tiger Tooth",409},{"Ultraviolet",98},{"Urban Masked",143}},
+  [526]={{"Blue Steel",42},{"Boreal Forest",77},{"Case Hardened",44},{"Crimson Web",12},{"Fade",38},{"Forest DDPAT",5},{"Night Stripe",735},{"Safari Mesh",72},{"Scorched",175},{"Slaughter",59},{"Stained",43},{"Urban Masked",143}},
+  [4725]={{"Jade",10085},{"Needle Point",10087},{"Unhinged",10088},{"Yellow-banded",10086}},
+  [5027]={{"Bronzed",10008},{"Charred",10006},{"Guerrilla",10039},{"Snakebite",10007}},
+  [5030]={{"Amphibious",10045},{"Arid",10019},{"Big Game",10074},{"Blaze",1407},{"Bronze Morph",10046},{"Creme Pinstripe",1408},{"Frosty",1406},{"Hedge Maze",10038},{"Nocts",10076},{"Occult",1417},{"Omega",10047},{"Pandora's Box",10037},{"Red Racer",1409},{"Scarlet Shamagh",10075},{"Slingshot",10073},{"Superconductor",10018},{"Ultra Violent",1410},{"Vice",10048},{"Violet Beadwork",1405}},
+  [5031]={{"Black Tie",10072},{"Brocade Crane",1399},{"Brocade Flowers",1400},{"Convoy",10015},{"Crimson Weave",10016},{"Diamondback",10040},{"Dragon Fists",1401},{"Garden",1402},{"Hand Sweaters",1439},{"Imperial Plaid",10042},{"King Snake",10041},{"Lunar Weave",10013},{"Overtake",10043},{"Plum Quill",1412},{"Queen Jaguar",10071},{"Racing Green",10044},{"Rezan the Red",10069},{"Seigaiha",1404},{"Snow Leopard",10070},{"Wave Chaser",1398}},
+  [5032]={{"Arboreal",10056},{"Badlands",10036},{"CAUTION!",10084},{"Cobalt Skulls",10053},{"Constrictor",10083},{"Desert Shamagh",10081},{"Duct Tape",10055},{"Giraffe",10082},{"Leather",10009},{"Overprint",10054},{"Slaughter",10021},{"Spruce DDPAT",10010}},
+  [5033]={{"3rd Commando Company",10080},{"Blood Pressure",10079},{"Boom!",10027},{"Cool Mint",10028},{"Eclipse",10024},{"Finish Line",10077},{"Polygon",10052},{"POW!",10049},{"Smoke Out",10078},{"Spearmint",10026},{"Transport",10051},{"Turtle",10050}},
+  [5034]={{"Big Swell",1437},{"Blackbook",1414},{"Buckshot",10062},{"Chocolate Chesterfield",1415},{"Cloud Chaser",1440},{"Crimson Kimono",10033},{"Crimson Web",10061},{"Emerald Web",10034},{"Fade",10063},{"Field Agent",10068},{"Forest DDPAT",10030},{"Foundation",10035},{"Lime Polycam",1413},{"Lt. Commander",10066},{"Marble Fade",10065},{"Mogul",10064},{"Pillow Punchers",1438},{"Sunburst",1416},{"Tiger Strike",10067}},
+  [5035]={{"Case Hardened",10060},{"Emerald",10057},{"Mangrove",10058},{"Rattler",10059}},
 }
 
-local function fetch(url, cacheFile)
-    local src
-    local bust = url .. "?nocache=" .. tostring({}):gsub("%W", "")
-    pcall(function() src = http.Get(bust) end)
-    if type(src) ~= "string" or #src <= 500 then pcall(function() src = http.Get(url) end) end
-    if type(src) == "string" and #src > 500 then
-        pcall(function()
-            local f = file.Open(cacheFile, "w")
-            if f then f:Write(src); f:Close() end
-        end)
-        return src, "server"
+local function skin_list_for(def)
+    local names  = { "[ None ]" }
+    local paints = { 0 }
+    local src = def and SKINS[def]
+    if src then
+        for i = 1, #src do
+            names[i+1]  = src[i][1]
+            paints[i+1] = src[i][2]
+        end
     end
+    return names, paints
+end
+
+local ITEMS = {}
+local function add_item(name, def, kind) ITEMS[#ITEMS+1] = { name = name, def = def, kind = kind } end
+
+for i = 1, #KNIVES do
+    local k = KNIVES[i]
+    if k.def then add_item("[Knife] " .. k.name, k.def, "knife") end
+end
+for i = 1, #WEAPONS do
+    add_item(WEAPONS[i].name, WEAPONS[i].def, "weapon")
+end
+for i = 1, #GLOVES do
+    local g = GLOVES[i]
+    add_item(g.def == 0 and "[Glove] Default (off)" or "[Glove] " .. g.name, g.def, "glove")
+end
+
+local itemNames = {}; for i = 1, #ITEMS do itemNames[i] = ITEMS[i].name end
+
+local DEF_TO_ITEM = {}
+for i = 1, #ITEMS do
+    if ITEMS[i].kind ~= "glove" then DEF_TO_ITEM[ITEMS[i].def] = i end
+end
+
+local state = {
+    cfg          = {},
+    opts         = {},
+    knifeDef     = nil,
+    gloveDef     = nil,
+    applied      = {},
+    pendingReset = {},
+    resetKnife   = false,
+    resetGlove   = false,
+    localModel       = nil,
+    appliedLocalModel= nil,
+    -- multiplayer model changer
+    modelAssignments = {}, -- key -> path
+    modelApplied     = {}, -- key -> last path we set
+    modelPersist     = true,
+    modelTargetMode  = 1,  -- 1 self, 2 teammates, 3 enemies, 4 selected
+}
+
+local Config = {}
+
+local g_activeDef = nil
+
+local function item_ptr(wpn) return wpn + off.m_AttributeManager + off.m_Item end
+
+local function safe_wear(wear)
+    if not wear or wear <= 0 then return 0.0001 end
+    return wear
+end
+
+local function write_fallback(wpn, paint, wear, seed, stat, statval)
+    w_i32(wpn + off.m_nFallbackPaintKit, paint)
+    w_f32(wpn + off.m_flFallbackWear, safe_wear(wear))
+    w_i32(wpn + off.m_nFallbackSeed, seed)
+    w_i32(wpn + off.m_nFallbackStatTrak, stat and (statval or 0) or -1)
+end
+
+local function mark_item_custom(item)
+    w_u32(item + off.m_iItemIDHigh, 0xFFFFFFFF)
+    w_u8 (item + off.m_bInitialized, 1)
+    w_u8 (item + off.m_bDisallowSOC, 0)
+    w_u8 (item + off.m_bRestoreCustomMat, 1)
+end
+
+local function refresh_econ(wpn)
+    vcall_void_bool(wpn, 10, true)
+    vcall_void_bool(wpn, 110, true)
+end
+
+local function apply_knife_model(wpn)
+    if fnptr.set_model then
+        local vdata = r_ptr(wpn + off.m_nSubclassID + 8)
+        if valid(vdata) then
+            local s = read_cstr(vdata + off.m_szWorldModel, 160)
+            if s:find("models/") and s:find("%.vmdl") then fnptr.set_model(ffi.cast("void*", wpn), s) end
+        end
+    end
+    if fnptr.set_mesh_mask then
+        local node = r_ptr(wpn + off.m_pGameSceneNode)
+        if valid(node) then fnptr.set_mesh_mask(ffi.cast("void*", node), 2) end
+    end
+end
+
+local function set_knife_subclass(wpn, def_target, quality)
+    local item = item_ptr(wpn)
+    w_u16(item + off.m_iItemDefinitionIndex, def_target)
+    w_i32(item + off.m_iEntityQuality, quality)
+    w_u32(wpn + off.m_nSubclassID, subclass_hash(def_target))
+    if fnptr.update_subclass then fnptr.update_subclass(ffi.cast("void*", wpn)) end
+    apply_knife_model(wpn)
+    return item
+end
+
+local function process_knife(wpn, def_target, paint, wear, seed, stat, statval)
+    local item = set_knife_subclass(wpn, def_target, 3)
+    mark_item_custom(item)
+    write_fallback(wpn, paint, wear, seed, stat, statval)
+    refresh_econ(wpn)
+    vcall_void(wpn, 195)
+end
+
+local function process_weapon(wpn, paint, wear, seed, stat, statval)
+    mark_item_custom(item_ptr(wpn))
+    write_fallback(wpn, paint, wear, seed, stat, statval)
+    refresh_econ(wpn)
+end
+
+local function restore_weapon(wpn)
+    write_fallback(wpn, 0, 0.0001, 0, false)
+    refresh_econ(wpn)
+end
+
+local function restore_knife(wpn, pawn)
+    local def_target = (r_u8(pawn + off.m_iTeamNum) == 2) and 59 or 42
+    set_knife_subclass(wpn, def_target, 0)
+    write_fallback(wpn, 0, 0.0001, 0, false)
+    refresh_econ(wpn)
+    vcall_void(wpn, 195)
+end
+
+local ATTR_STRUCT = 72
+
+local game_alloc, game_free
+local function resolve_mem()
+    if game_alloc then return true end
+    pcall(function() ffi.cdef[[ void* GetModuleHandleA(const char*); ]] end)
+    pcall(function() ffi.cdef[[ void* GetProcAddress(void*, const char*); ]] end)
+    local tier0
+    pcall(function() tier0 = ffi.C.GetModuleHandleA("tier0.dll") end)
+    if not tier0 then return false end
+    local pa, pf
+    pcall(function() pa = ffi.C.GetProcAddress(tier0, "MemAlloc_AllocFunc") end)
+    pcall(function() pf = ffi.C.GetProcAddress(tier0, "MemAlloc_FreeFunc") end)
+    if not pa or not pf then return false end
     pcall(function()
-        local f = file.Open(cacheFile, "r")
-        if f then src = f:Read(); f:Close() end
+        game_alloc = ffi.cast("void*(*)(size_t)", pa)
+        game_free  = ffi.cast("void(*)(void*)", pf)
     end)
-    if type(src) == "string" and #src > 500 then return src, "cache" end
+    return game_alloc ~= nil and game_free ~= nil
+end
+
+local function glove_attr_remove(item)
+    local addr = item + off.m_AttributeList + off.m_Attributes
+    local size = r_ptr(addr)
+    local ptr  = r_ptr(addr + 8)
+    w_u64(addr, 0); w_u64(addr + 8, 0)
+    if game_free and size ~= 0 and valid(ptr) then
+        pcall(function() game_free(ffi.cast("void*", ptr)) end)
+    end
+end
+
+local function glove_attr_set(item, paint, seed, wear)
+    glove_attr_remove(item)
+    if paint <= 0 then return end
+    if not resolve_mem() then return end
+    wear = safe_wear(wear)
+    local raw  = game_alloc(ATTR_STRUCT * 3)
+    local bptr = tonumber(ffi.cast("uintptr_t", raw))
+    if not bptr or bptr == 0 then return end
+    for i = 0, (ATTR_STRUCT * 3) / 8 - 1 do w_u64(bptr + i * 8, 0) end
+    local function mk(i, def, val)
+        local b = bptr + i * ATTR_STRUCT
+        w_u16(b + 0x30, def); w_f32(b + 0x34, val); w_f32(b + 0x38, val)
+    end
+    mk(0, 6, paint)
+    mk(1, 7, seed)
+    mk(2, 8, wear)
+    local addr = item + off.m_AttributeList + off.m_Attributes
+    w_u64(addr, 3)
+    w_u64(addr + 8, bptr)
+end
+
+local function local_account_id(base)
+    local ctrl = r_ptr(base + off.dwLocalPlayerController)
+    if not valid(ctrl) then return 0 end
+    local sid = r_u64(ctrl + off.m_steamID)
+    return tonumber(sid % 0x100000000)
+end
+
+local glove_key, glove_apply = nil, 0
+local function apply_gloves(base, pawn, gdef, paint, wear, seed)
+    local g    = pawn + off.m_EconGloves
+    local cur  = r_u16(g + off.m_iItemDefinitionIndex)
+    local init = r_u8 (g + off.m_bInitialized)
+    local key  = gdef.."|"..paint.."|"..floor(wear*100000).."|"..seed
+
+    if key ~= glove_key then glove_key = key; glove_apply = 6 end
+    local engine_reset = (cur ~= gdef) or (init == 0)
+    if engine_reset and glove_apply <= 0 then glove_apply = 2 end
+
+    if glove_apply > 0 then
+        local acc = local_account_id(base)
+        w_u8 (g + off.m_bInitialized, 0)
+        w_u16(g + off.m_iItemDefinitionIndex, gdef)
+        w_i32(g + off.m_iEntityQuality, 3)
+        w_u32(g + off.m_iItemIDHigh, 0xFFFFFFFF)
+        w_u32(g + off.m_iItemIDLow,  0xFFFFFFFF)
+        w_u32(g + off.m_iAccountID, acc)
+        w_u32(g + off.m_OriginalOwnerXuidLow, acc)
+        glove_attr_set(g, paint, seed, wear)
+        w_u8 (g + off.m_bDisallowSOC, 0)
+        w_u8 (g + off.m_bRestoreCustomMat, 1)
+        w_u8 (g + off.m_bInitialized, 1)
+        w_u8 (pawn + off.m_bNeedToReApplyGloves, 1)
+        if fnptr.set_body_group then
+            pcall(function() fnptr.set_body_group(ffi.cast("void*", pawn), "first_or_third_person", 1) end)
+        end
+        glove_apply = glove_apply - 1
+    end
+end
+
+local function reset_gloves(pawn)
+    local g = pawn + off.m_EconGloves
+    w_u8 (g + off.m_bInitialized, 0)
+    w_u16(g + off.m_iItemDefinitionIndex, 0)
+    glove_attr_remove(g)
+    w_u8 (pawn + off.m_bNeedToReApplyGloves, 1)
+    glove_key, glove_apply = nil, 0
+    if fnptr.set_body_group then
+        pcall(function() fnptr.set_body_group(ffi.cast("void*", pawn), "first_or_third_person", 1) end)
+    end
+end
+
+local function handle_to_entity(elist, hnd)
+    if not valid(elist) or hnd == 0 or hnd == 0xFFFFFFFF then return nil end
+    local idx   = band(hnd, 0x7FFF)
+    local chunk = r_ptr(elist + 8 * rshift(idx, 9) + 16); if not valid(chunk) then return nil end
+    local e     = r_ptr(chunk + 112 * band(idx, 0x1FF))
+    if valid(e) and valid(r_ptr(e)) then return e end
     return nil
 end
 
-local function load(url, cacheFile, name)
-    local src, where = fetch(url, cacheFile)
-    if not src then print("[mahanmoi] FATAL: cannot load " .. name) return nil end
-    local chunk, err = loadstring(src, "=" .. cacheFile)
-    if not chunk then print("[mahanmoi] " .. name .. " compile error: " .. tostring(err)) return nil end
-    local ok, mod = pcall(chunk)
-    if not ok then print("[mahanmoi] " .. name .. " run error: " .. tostring(mod)) return nil end
-    print("[mahanmoi] " .. name .. " loaded from " .. tostring(where))
-    return mod
+local function pawn_alive(pawn)
+
+    local ls = r_u8 (pawn + off.m_lifeState)
+    local hp = r_i32(pawn + off.m_iHealth)
+    return ls == 0 and hp > 0 and hp < 100000
 end
 
-local M = load(GUILIB_URL, ".\\mahanmoi_lua\\mahanmoi_guilib.lua", "guilib")
-if type(M) ~= "table" then return end
-
-local C = load(CHANGER_URL, ".\\mahanmoi_lua\\mahanmoi_changer.lua", "changer")
-if type(C) ~= "table" then return end
-
-local floor = math.floor
-
-local VM = {}
-local HS = {}
-
-local weaponLb, skinLb, skinWd
-local sWear, sSeed, cbAuto
-local modelLb, modelWd, modelPaths
-local cbVm, vmX, vmY, vmZ
-local hsOn, hsCmb, hsCmbWd, hsVol
-local ksOn, ksCmb, ksCmbWd, ksVol
-local hlOn, hlMiss, hlHit, hlHurt, hlKill
-local wmOn, wmElems, wmPos
-local rgOn, rgCmb, rgCmbWd, rgPen, rgMin
-local ncOn, ncMode, ncSrc, ncText, ncSpeed
-local vrOn, vrMode
-local SND_NAMES, SND_PATHS
-
-local lastModelSel = -1
-local curPaints    = { 0 }
-local lastSel      = -1
-local lastSig      = nil
-local lastAutoDef  = nil
-local lastAuto     = false
-
-local function item()     return C.items[weaponLb:Get()] end
-local function paint()    return curPaints[skinLb:Get()] or 0 end
-local function settings() return sWear:Get(), floor(sSeed:Get() + 0.5) end
-
-local function applySelected()
-    local it = item(); if not it then return end
-    local w, s = settings()
-    C.apply(it, paint(), w, s)
+local function in_game()
+    local cl, so = off.dwNetworkGameClient, off.dwNetworkGameClient_signOnState
+    -- missing offsets: do NOT assume in-game (avoids SetModel on bad ptrs in menu)
+    if not cl or not so then return false end
+    local eng = mem.GetModuleBase("engine2.dll"); if not eng then return false end
+    local client = r_ptr(eng + cl); if not valid(client) then return false end
+    return r_i32(client + so) == 6
 end
 
-local function sig()
-    local it = item(); if not it then return "none" end
-    local w, s = settings()
-    return it.def.."|"..paint().."|"..floor(w * 100000).."|"..s
+local function get_live_local()
+    local ok, lp = pcall(entities.GetLocalPlayer)
+    if not ok or not lp then return nil end
+    local alive = false
+    pcall(function() alive = lp:IsAlive() end)
+    return alive and lp or nil
 end
 
-local function autoFollow()
-    if not cbAuto:Get() then lastAutoDef = nil; return end
-    local def = C.activeDef(); if not def then return end
-    if not C.defToItem[def] and C.isKnife(def) and C.knifeDef() then def = C.knifeDef() end
-    if def == lastAutoDef then return end
-    local idx = C.defToItem[def]; if not idx then return end
-    lastAutoDef = def
-    weaponLb:Set(idx)
+local model_ffi_done = false
+local function model_ffi()
+    if model_ffi_done then return end
+    model_ffi_done = true
+    pcall(function() ffi.cdef[[
+        typedef struct {
+            uint32_t dwFileAttributes;
+            uint32_t ftCreationLo, ftCreationHi;
+            uint32_t ftAccessLo,   ftAccessHi;
+            uint32_t ftWriteLo,    ftWriteHi;
+            uint32_t nFileSizeHigh, nFileSizeLow;
+            uint32_t dwReserved0,  dwReserved1;
+            char     cFileName[260];
+            char     cAlternateFileName[14];
+        } AW_FIND_DATA;
+        void*    FindFirstFileA(const char*, AW_FIND_DATA*);
+        int      FindNextFileA(void*, AW_FIND_DATA*);
+        int      FindClose(void*);
+        uint32_t GetCurrentDirectoryA(uint32_t, char*);
+        typedef struct {
+            int32_t  m_nLength;
+            uint32_t m_nAllocatedSize;
+            union { char* p; char s[8]; } u;
+        } AW_CBufStr;
+    ]] end)
+    pcall(function() ffi.cdef[[ void* GetModuleHandleA(const char*); ]] end)
+    pcall(function() ffi.cdef[[ void* GetProcAddress(void*, const char*); ]] end)
 end
 
-local function autoApply()
-    local s = sig()
-    if s == lastSig then return end
-    lastSig = s
-    applySelected()
+local function find_invalid() return ffi.cast("void*", ffi.cast("intptr_t", -1)) end
+
+local function models_root()
+    model_ffi()
+    local buf = ffi.new("char[?]", 1024)
+    local n = ffi.C.GetCurrentDirectoryA(1024, buf)
+    local cwd = ffi.string(buf, n)
+
+    local root, count = cwd:gsub("[\\/]bin[\\/]win64.*$", "\\csgo")
+    if count == 0 then return nil end
+    return root
 end
 
-local function syncSkins()
-    local sel = weaponLb:Get()
-    if sel == lastSel then return end
-    lastSel = sel
-    local it = C.items[sel]; if not it then return end
-    local names, paints = C.skinList(it.def)
-    curPaints     = paints
-    skinWd.items  = names
-    skinWd.value  = 1
-    skinWd.scroll = 0
-    local c = C.getCfg(it.def)
-    if c then
-        sWear:Set(c.wear); sSeed:Set(c.seed)
-        for i = 2, #paints do
-            if paints[i] == c.paint then skinWd.value = i; break end
-        end
-    end
-    lastSig = sig()
-end
+local SCAN_DIRS = { "characters", "agents", "models" }
+local SKIP_DIRS_ALT = { exg = true, materials = true }
 
-local function persistOpts()
-    local v = cbAuto:Get()
-    if v ~= lastAuto then lastAuto = v; C.setOpt("autoFollow", v) end
-end
+local g_modelScanAlt = false
+local g_modelFilter  = ""
 
-local function syncModel()
-    if not modelLb then return end
-    local sel = modelLb:Get()
-    if sel == lastModelSel then return end
-    lastModelSel = sel
-    C.setLocalModel(modelPaths and modelPaths[sel] or nil)
-end
-
-do
-    local page, match, origRel, ok = nil, nil, nil, false
-
-    local function r_i32(a) return ffi.cast("int32_t*",  a)[0] end
-    local function w_u8 (a, v) ffi.cast("uint8_t*", a)[0] = v end
-    local function w_i32(a, v) ffi.cast("int32_t*", a)[0] = v end
-    local function w_f32(a, v) ffi.cast("float*",   a)[0] = v end
-
-    local function le64(v)
-        local t = {}
-        for _ = 1, 8 do t[#t + 1] = v % 256; v = math.floor(v / 256) end
-        return t
-    end
-
-    local function alloc_near(target, size)
-        local gran = 0x10000
-        local base = target - (target % gran)
-        for i = 1, 0x8000 do
-            local lo, hi = base - i * gran, base + i * gran
-            if lo > 0x10000 then
-                local p = ffi.C.VirtualAlloc(ffi.cast("void*", lo), size, 0x3000, 0x40)
-                if p ~= nil then return p end
+local function scan_into(dir, names, paths, opts)
+    opts = opts or {}
+    local fd = ffi.new("AW_FIND_DATA")
+    local h = ffi.C.FindFirstFileA(dir .. "\\*", fd)
+    if h == find_invalid() then return end
+    repeat
+        local nm = ffi.string(fd.cFileName)
+        if nm ~= "." and nm ~= ".." then
+            local full = dir .. "\\" .. nm
+            if band(fd.dwFileAttributes, 0x10) ~= 0 then
+                local low = nm:lower()
+                if not (opts.skip_exg_mat and SKIP_DIRS_ALT[low]) then
+                    scan_into(full, names, paths, opts)
+                end
+            elseif nm:sub(-7) == ".vmdl_c" then
+                local stem = nm:sub(1, #nm - 7)
+                if not stem:lower():match("_arms?$") then
+                    local p = full:lower():find("\\csgo\\", 1, true)
+                    if p then
+                        local rel = full:sub(p + 6):gsub("\\", "/")
+                        rel = rel:sub(1, #rel - 2)
+                        local filt = opts.filter
+                        if filt and filt ~= "" then
+                            local fl = filt:lower()
+                            if not stem:lower():find(fl, 1, true) and not rel:lower():find(fl, 1, true) then
+                                -- skip non-matching name
+                            else
+                                names[#names + 1] = stem
+                                paths[#paths + 1] = rel
+                            end
+                        else
+                            names[#names + 1] = stem
+                            paths[#paths + 1] = rel
+                        end
+                    end
+                end
             end
-            local p2 = ffi.C.VirtualAlloc(ffi.cast("void*", hi), size, 0x3000, 0x40)
-            if p2 ~= nil then return p2 end
         end
-        return nil
-    end
-
-    local function install()
-        if type(ffi) ~= "table" then print("[mahanmoi] VM: no ffi"); return false end
-        pcall(function() ffi.cdef [[
-            void* VirtualAlloc(void*, size_t, uint32_t, uint32_t);
-            int   VirtualProtect(void*, size_t, uint32_t, uint32_t*);
-            void* GetCurrentProcess(void);
-            int   FlushInstructionCache(void*, void*, size_t);
-        ]] end)
-
-        local a = mem.FindPattern("client.dll", SIG.vm)
-        if not a or a == 0 then print("[mahanmoi] VM: sig not found"); return false end
-        match = a
-        local orig = a + 5 + r_i32(a + 1)
-
-        local p = alloc_near(orig, 0x1000)
-        if p == nil then print("[mahanmoi] VM: alloc failed"); return false end
-        page = tonumber(ffi.cast("uintptr_t", p))
-        local code = page + 16
-
-        local b = { 0x53, 0x56, 0x48,0x83,0xEC,0x28, 0x48,0x89,0xD6, 0x48,0xB8 }
-        for _, v in ipairs(le64(orig)) do b[#b + 1] = v end
-        for _, v in ipairs({ 0xFF,0xD0, 0x48,0xBB }) do b[#b + 1] = v end
-        for _, v in ipairs(le64(page)) do b[#b + 1] = v end
-        for _, v in ipairs({
-            0x8B,0x0B, 0x85,0xC9, 0x74,0x2B,
-            0xF3,0x0F,0x10,0x4B,0x04, 0xF3,0x0F,0x58,0x0E, 0xF3,0x0F,0x11,0x0E,
-            0xF3,0x0F,0x10,0x4B,0x08, 0xF3,0x0F,0x58,0x4E,0x04, 0xF3,0x0F,0x11,0x4E,0x04,
-            0xF3,0x0F,0x10,0x4B,0x0C, 0xF3,0x0F,0x58,0x4E,0x08, 0xF3,0x0F,0x11,0x4E,0x08,
-            0x48,0x83,0xC4,0x28, 0x5E, 0x5B, 0xC3,
-        }) do b[#b + 1] = v end
-        for i = 0, #b - 1 do w_u8(code + i, b[i + 1]) end
-        w_i32(page, 0); w_f32(page + 4, 0); w_f32(page + 8, 0); w_f32(page + 12, 0)
-
-        local rel = code - (match + 5)
-        if rel < -2147483648 or rel > 2147483647 then print("[mahanmoi] VM: rel32 overflow"); return false end
-        origRel = r_i32(match + 1)
-        local old = ffi.new("uint32_t[1]")
-        ffi.C.VirtualProtect(ffi.cast("void*", match), 5, 0x40, old)
-        w_i32(match + 1, rel)
-        ffi.C.VirtualProtect(ffi.cast("void*", match), 5, old[0], old)
-        pcall(function() ffi.C.FlushInstructionCache(ffi.C.GetCurrentProcess(), ffi.cast("void*", match), 5) end)
-        print("[mahanmoi] VM: installed")
-        return true
-    end
-
-    -- Disabled on load: code patch crashes after CS2 update (execute AV on unmapped RIP)
-    -- pcall(function() ok = install() end)
-    print("[mahanmoi] VM: auto-install disabled (safe mode)")
-
-    function VM.set(on, x, y, z)
-        if not ok or not page then return end
-        w_i32(page, on and 1 or 0)
-        w_f32(page + 4, x or 0)
-        w_f32(page + 8, y or 0)
-        w_f32(page + 12, z or 0)
-    end
-
-    function VM.uninstall()
-        if not (ok and match and origRel) then return end
-        pcall(function()
-            local old = ffi.new("uint32_t[1]")
-            ffi.C.VirtualProtect(ffi.cast("void*", match), 5, 0x40, old)
-            w_i32(match + 1, origRel)
-            ffi.C.VirtualProtect(ffi.cast("void*", match), 5, old[0], old)
-        end)
-    end
-end
-pcall(function() callbacks.Register("Unload", function() pcall(VM.uninstall) end) end)
-
-local lastVm = nil
-local function syncVm()
-    local on = cbVm:Get()
-    local x, y, z = vmX:Get(), vmY:Get(), vmZ:Get()
-    VM.set(on, x, y, z)
-    local s = (on and "1" or "0") .. ":" .. x .. ":" .. y .. ":" .. z
-    if s ~= lastVm then
-        lastVm = s
-        C.setOpt("vm_on", on)
-        C.setOpt("vm_x", x); C.setOpt("vm_y", y); C.setOpt("vm_z", z)
-    end
+    until ffi.C.FindNextFileA(h, fd) == 0
+    ffi.C.FindClose(h)
 end
 
-do
-    local f = ffi
-    local FFF, FNF, FCL, GCD, WINEXEC
-    local soundDir = ".\\csgo\\sounds"
-    if type(f) == "table" then
-        pcall(function() f.cdef [[ void* GetModuleHandleA(const char*); void* GetProcAddress(void*, const char*); ]] end)
-        pcall(function() f.cdef [[ typedef struct { uint32_t attr; uint8_t pad[40]; char nm[260]; char alt[14]; } AWSNDFD; ]] end)
-        local function P(nm, t)
-            local h = f.C.GetModuleHandleA("kernel32.dll"); if h == nil then return nil end
-            local p = f.C.GetProcAddress(h, nm); return (p ~= nil) and f.cast(t, p) or nil
-        end
-        FFF = P("FindFirstFileA",       "void*(*)(const char*, void*)")
-        FNF = P("FindNextFileA",        "int(*)(void*, void*)")
-        FCL = P("FindClose",            "int(*)(void*)")
-        GCD = P("GetCurrentDirectoryA", "uint32_t(*)(uint32_t, char*)")
-        WINEXEC = P("WinExec",          "uint32_t(*)(const char*, uint32_t)")
-        pcall(function()
-            if GCD then
-                local eb = f.new("char[?]", 1024)
-                local cwd = f.string(eb, GCD(1024, eb))
-                soundDir = cwd:gsub("[\\/]bin[\\/]win64.*$", "\\csgo\\sounds")
-            end
-        end)
-    end
-    HS.openSoundDir = function()
-        if WINEXEC then pcall(function() WINEXEC('explorer.exe "' .. soundDir .. '"', 5) end) end
-    end
-
-    local function scanSounds()
-        local names = {}
-        pcall(function()
-            if not (f and FFF and FNF and FCL) then return end
-            local INVALID = f.cast("void*", f.cast("intptr_t", -1))
-            local fd = f.new("AWSNDFD")
-            local h = FFF(soundDir .. "\\*.vsnd_c", fd)
-            if h ~= INVALID then
-                repeat
-                    local nm = f.string(fd.nm)
-                    if nm:sub(-7):lower() == ".vsnd_c" then names[#names + 1] = nm:sub(1, #nm - 7) end
-                until FNF(h, fd) == 0
-                FCL(h)
-            end
-        end)
-        table.sort(names)
-        local paths = {}
-        for i = 1, #names do paths[i] = names[i] end
-        if #names == 0 then names[1] = "[ put .vsnd_c in csgo\\sounds ]" end
-        return names, paths
-    end
-    HS.scan = scanSounds
-    SND_NAMES, SND_PATHS = scanSounds()
-
-    local function resolve(cmb)
-        return tostring(SND_PATHS[cmb:Get()] or "")
-    end
-
-    local function play(path, vol)
-        if path == "" then return end
-        vol = (tonumber(vol) or 100) / 100
-        if vol <= 0 then return end
-        pcall(function() client.SetConVar("snd_toolvolume", vol, true) end)
-        pcall(function() client.Command("play sounds\\" .. path, true) end)
-    end
-
-    function HS.playHit()  play(resolve(hsCmb), hsVol:Get()) end
-    function HS.playKill() play(resolve(ksCmb), ksVol:Get()) end
-
-    local bit_ = rawget(_G, "bit")
-    local DLL  = "client.dll"
-    local off  = {}
-    off.dwEntityList            = C.offsets and C.offsets.dwEntityList
-    off.dwLocalPlayerController = C.offsets and C.offsets.dwLocalPlayerController
+local g_modelNames, g_modelPaths
+local function scan_models()
+    if g_modelNames then return g_modelNames, g_modelPaths end
+    local names, paths = { "[ OFF ]" }, { "" }
     pcall(function()
-        local j = http.Get("https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/client_dll.json")
-        off.m_iszPlayerName = j and tonumber(j:match('"m_iszPlayerName"%s*:%s*(%d+)')) or nil
-        off.m_iPing         = j and tonumber(j:match('"m_iPing"%s*:%s*(%d+)')) or nil
-    end) 
+        local root = models_root()
+        if not root then return end
+        local opts = {
+            skip_exg_mat = g_modelScanAlt and true or false,
+            filter = (g_modelFilter and g_modelFilter ~= "") and g_modelFilter or nil,
+        }
+        if g_modelScanAlt then
+            scan_into(root .. "\\characters", names, paths, opts)
+        else
+            for _, sub in ipairs(SCAN_DIRS) do
+                scan_into(root .. "\\" .. sub, names, paths, opts)
+            end
+        end
+    end)
+    g_modelNames, g_modelPaths = names, paths
+    return names, paths
+end
+local function rescan_models()
+    g_modelNames, g_modelPaths = nil, nil
+    return scan_models()
+end
 
-    local band, rshift = (bit_ or {}).band, (bit_ or {}).rshift
-    local function slot(elist, idx)
-        if not valid(elist) then return nil end
+local g_IRS = nil
+local PRECACHE_SIG = "40 53 55 57 48 81 EC 80 00 00 00 48 8B 01 49 8B E8 48 8B FA"
+local function resolve_model_fns()
+    if fnptr.precache and g_IRS and fnptr.cbuf_insert then return true end
+    model_ffi()
+    if not fn.precache then
+        local a = mem.FindPattern("resourcesystem.dll", PRECACHE_SIG)
+        if a and a ~= 0 then fn.precache = a end
+    end
+    if fn.precache and not fnptr.precache then
+        fnptr.precache = ffi.cast("void*(*)(void*, void*, const char*)", fn.precache)
+    end
+    if not g_IRS then
+        pcall(function()
+            local rs = ffi.C.GetModuleHandleA("resourcesystem.dll")
+            local ci = rs and ffi.C.GetProcAddress(rs, "CreateInterface")
+            if ci then
+                local CI = ffi.cast("void*(*)(const char*, int*)", ci)
+                local irs = CI("ResourceSystem013", nil)
+                if irs ~= nil then g_IRS = irs end
+            end
+        end)
+    end
+    if not fnptr.cbuf_insert then
+        pcall(function()
+            local t0 = ffi.C.GetModuleHandleA("tier0.dll")
+            local ins = t0 and ffi.C.GetProcAddress(t0, "?Insert@CBufferString@@QEAAPEBDHPEBDH_N@Z")
+            if ins then fnptr.cbuf_insert = ffi.cast("const char*(*)(void*, int, const char*, int, int)", ins) end
+        end)
+    end
+    return fnptr.precache ~= nil and g_IRS ~= nil and fnptr.cbuf_insert ~= nil
+end
+
+local function precache_model(path)
+    if path == nil or path == "" then return end
+    if not resolve_model_fns() then return end
+    local cb = ffi.new("AW_CBufStr")
+    cb.m_nLength = 0
+    cb.m_nAllocatedSize = 0xC0000008
+    cb.u.p = nil
+    pcall(function() fnptr.cbuf_insert(cb, 0, path, -1, 0) end)
+    pcall(function() fnptr.precache(g_IRS, cb, "") end)
+end
+
+local function safe_set_model(pawn, path)
+    if not fnptr.set_model then return false end
+    if not valid(pawn) then return false end
+    if type(path) ~= "string" or path == "" or not path:find("%.vmdl") then return false end
+    if (pawn % 8) ~= 0 then return false end
+    if not valid(r_ptr(pawn)) then return false end
+    precache_model(path)
+    local ok = pcall(function() fnptr.set_model(ffi.cast("void*", pawn), path) end)
+    return ok
+end
+
+local function entity_by_index(idx)
+    if not idx or idx <= 0 or idx > 0x7fff then return nil end
+    if not off.dwEntityList then return nil end
+    if not in_game() then return nil end
+    local ok, ent = pcall(function()
+        local base = mem.GetModuleBase(DLL); if not base then return nil end
+        local elist = r_ptr(base + off.dwEntityList); if not valid(elist) then return nil end
         local chunk = r_ptr(elist + 8 * rshift(idx, 9) + 16); if not valid(chunk) then return nil end
         local e = r_ptr(chunk + 112 * band(idx, 0x1FF))
         if valid(e) and valid(r_ptr(e)) then return e end
         return nil
-    end
+    end)
+    if ok and valid(ent) then return ent end
+    return nil
+end
 
-    local function nameOf(elist, plyslot)
-        if not (off.m_iszPlayerName and type(ffi) == "table") then return nil end
-        local c = slot(elist, (plyslot or -1) + 1)
-        if not valid(c) then return nil end
-        local s
-        pcall(function() s = ffi.string(ffi.cast("const char*", c + off.m_iszPlayerName)) end)
-        if s and #s > 0 and #s < 64 then return s end
-        return nil
-    end
-
-    local function localCtrlList()
-        if not (type(ffi) == "table" and band and off.dwLocalPlayerController and off.dwEntityList) then return nil, nil end
-        local base = mem.GetModuleBase(DLL); if not base then return nil, nil end
-        local lctrl = r_ptr(base + off.dwLocalPlayerController)
-        local elist = r_ptr(base + off.dwEntityList)
-        if valid(lctrl) and valid(elist) then return lctrl, elist end
-        return nil, nil
-    end
-
-    function HS.localInfo()
-        local lctrl = localCtrlList()
-        if not valid(lctrl) then return nil, nil end
-        local nick, ping
-        if off.m_iszPlayerName then
-            pcall(function()
-                local s = ffi.string(ffi.cast("const char*", lctrl + off.m_iszPlayerName))
-                if s and #s > 0 and #s < 64 then nick = s end
-            end)
+local function player_display_name(pawn)
+    local n
+    pcall(function()
+        local ctrl = pawn:GetPropEntity("m_hController")
+        if ctrl then
+            n = ctrl:GetName()
+            if (not n or n == "") then n = ctrl:GetPropString("m_iszPlayerName") end
         end
-        if off.m_iPing then
-            pcall(function()
-                local p = ffi.cast("int32_t*", lctrl + off.m_iPing)[0]
-                if p and p >= 0 and p < 10000 then ping = p end
-            end)
-        end
-        return nick, ping
-    end
+        if (not n or n == "") then n = pawn:GetName() end
+    end)
+    if n and n ~= "" then return n end
+    local idx = 0
+    pcall(function() idx = pawn:GetIndex() end)
+    return "#" .. tostring(idx)
+end
 
-    function HS.nameBySlot(s)
-        local _, elist = localCtrlList()
-        if not valid(elist) then return nil end
-        return nameOf(elist, s)
-    end
-
-    local MISS_DELAY = 16
-    local frameId = 0
-    local pend = {}
-
-    local HG = { [0] = "body", [1] = "head", [2] = "chest", [3] = "stomach",
-                 [4] = "l.arm", [5] = "r.arm", [6] = "l.leg", [7] = "r.leg", [10] = "gear" }
-
-    local function evHurt(d)
-        local dmg = d.dmg_health or 0
-        if dmg <= 0 then return end
-        local lctrl, elist = localCtrlList()
-        local iAttack, iHurt = true, false
-        if lctrl then
-            iAttack = slot(elist, (d.attacker or -1) + 1) == lctrl
-            iHurt   = slot(elist, (d.userid   or -1) + 1) == lctrl
-        end
-        if d.userid == d.attacker then iAttack = false end
-
-        local hg = HG[d.hitgroup or 0] or "body"
-        if iAttack then
-            for i = 1, #pend do if not pend[i].hit then pend[i].hit = true; break end end
-            local dead = (d.health or 1) <= 0
-            local who  = nameOf(elist, d.userid) or "player"
-            if dead then
-                if ksOn:Get() then HS.playKill() end
-                if hlOn:Get() and hlKill:Get() then
-                    M:Hitlog("kill", dmg, "killed " .. who .. " in " .. hg .. " for " .. dmg .. "hp")
-                end
-            else
-                if hsOn:Get() then HS.playHit() end
-                if hlOn:Get() and hlHit:Get() then
-                    M:Hitlog("hit", dmg, "hit " .. who .. " in " .. hg .. " for " .. dmg .. "hp")
-                end
+local function player_key(pawn, is_local)
+    if is_local then return "local" end
+    local sid
+    pcall(function()
+        local ctrl = pawn:GetPropEntity("m_hController")
+        if ctrl then
+            sid = ctrl:GetProp("m_steamID")
+            if not sid or sid == 0 then
+                if ctrl.GetPropInt then sid = ctrl:GetPropInt("m_steamID") end
             end
-        elseif iHurt then
-            local who = nameOf(elist, d.attacker) or "player"
-            if hlOn:Get() and hlHurt:Get() then
-                M:Hitlog("hurt", dmg, "hurt by " .. who .. " in " .. hg .. " for " .. dmg .. "hp")
+        end
+    end)
+    if sid and tonumber(sid) and tonumber(sid) > 0 then return "s:" .. tostring(sid) end
+    local idx = 0
+    pcall(function() idx = pawn:GetIndex() end)
+    return "i:" .. tostring(idx)
+end
+
+local function collect_alive_players()
+    local out = {}
+    local ok_f, pawns = pcall(entities.FindByClass, "C_CSPlayerPawn")
+    if not ok_f or not pawns then return out end
+
+    local ok_lp, lp = pcall(entities.GetLocalPlayer)
+    if not ok_lp or not lp then
+        ok_lp, lp = pcall(entities.GetLocalPawn)
+    end
+    local lp_idx = -1
+    if ok_lp and lp then pcall(function() lp_idx = lp:GetIndex() end) end
+
+    for _, pawn in pairs(pawns) do
+        local alive, idx, team = false, 0, 0
+        pcall(function() alive = pawn:IsAlive() end)
+        if alive then
+            pcall(function() idx = pawn:GetIndex() end)
+            pcall(function() team = pawn:GetTeamNumber() end)
+            if idx and idx > 0 then
+                local is_local = (idx == lp_idx)
+                out[#out + 1] = {
+                    pawn = pawn,
+                    raw = nil, -- resolve lazily only when applying in-game
+                    idx = idx,
+                    team = team or 0,
+                    is_local = is_local,
+                    name = player_display_name(pawn),
+                    key = player_key(pawn, is_local),
+                }
             end
         end
     end
+    return out
+end
 
-    local function evFire(d)
-        if not (hlOn:Get() and hlMiss:Get()) then return end
-        local adef = C.activeDef()
-        if adef and C.isKnife(adef) then return end
-        local lctrl, elist = localCtrlList()
-        if not lctrl then return end
-        if slot(elist, (d.userid or -1) + 1) ~= lctrl then return end
-        pend[#pend + 1] = { f = frameId, hit = false }
+local function model_needs_apply(info, path)
+    if not path or path == "" then return false end
+    if state.modelPersist then
+        local cur
+        pcall(function() cur = info.pawn:GetModelName() end)
+        if type(cur) == "string" and cur == path then return false end
+        return true
     end
+    return state.modelApplied[info.key] ~= path
+end
 
-    function HS.onEvent(ev)
-        local name
-        pcall(function() name = ev:GetName() end)
-        if name == "player_hurt" then
-            local d = {}
-            pcall(function()
-                d.attacker   = ev:GetInt("attacker")
-                d.userid     = ev:GetInt("userid")
-                d.health     = ev:GetInt("health")
-                d.dmg_health = ev:GetInt("dmg_health")
-                d.hitgroup   = ev:GetInt("hitgroup")
-            end)
-            evHurt(d)
-        elseif name == "weapon_fire" then
-            local d = {}
-            pcall(function() d.userid = ev:GetInt("userid") end)
-            evFire(d)
+local function apply_path_to_player(info, path)
+    if not info or not path or path == "" then return false end
+    if not in_game() then return false end
+    if not model_needs_apply(info, path) then return false end
+    local raw = info.raw
+    if not valid(raw) then
+        raw = entity_by_index(info.idx)
+        info.raw = raw
+    end
+    if not valid(raw) then return false end
+    if safe_set_model(raw, path) then
+        state.modelApplied[info.key] = path
+        if info.is_local then
+            state.appliedLocalModel = path
+            state.overrideActive = true
         end
+        return true
     end
+    return false
+end
 
-    function HS.missTick()
-        frameId = frameId + 1
-        if #pend == 0 then return end
-        local keep = {}
-        for i = 1, #pend do
-            local s = pend[i]
-            if frameId - s.f >= MISS_DELAY then
-                if not s.hit and hlOn:Get() and hlMiss:Get() then M:Hitlog("miss", nil, "missed shot") end
-            else
-                keep[#keep + 1] = s
-            end
+local function apply_all_model_assignments()
+    if not fnptr.set_model then return end
+    if not in_game() then return end
+    if not next(state.modelAssignments) and not (state.localModel and state.localModel ~= "") then
+        return
+    end
+    local ok, players = pcall(collect_alive_players)
+    if not ok or not players then return end
+    for _, info in ipairs(players) do
+        local path = state.modelAssignments[info.key]
+        if (not path or path == "") and info.is_local then
+            path = state.localModel
         end
-        pend = keep
-    end
-
-    local lastHs = nil
-    function HS.sync()
-        local s = table.concat({ hsOn:Get() and 1 or 0, hsCmb:Get(), hsVol:Get(),
-                                 ksOn:Get() and 1 or 0, ksCmb:Get(), ksVol:Get() }, ":")
-        if s == lastHs then return end
-        lastHs = s
-        C.setOpt("hs_on2", hsOn:Get()); C.setOpt("hs_snd2", hsCmb:Get()); C.setOpt("hs_vol2", hsVol:Get())
-        C.setOpt("ks_on2", ksOn:Get()); C.setOpt("ks_snd2", ksCmb:Get()); C.setOpt("ks_vol2", ksVol:Get())
+        if path and path ~= "" then
+            pcall(apply_path_to_player, info, path)
+        end
     end
 end
 
-local RG = { ok = false, ids = {}, names = {}, allow = {}, add = 200, enabled = false, installed = false }
-do
-    local f = ffi
-    local CITY = {
-        ams = "Amsterdam", atl = "Atlanta", bom = "Mumbai", maa = "Chennai",
-        can = "Guangzhou", sha = "Shanghai", tyo = "Tokyo", hkg = "Hong Kong",
-        seo = "Seoul", sgp = "Singapore", syd = "Sydney", dxb = "Dubai",
-        fra = "Frankfurt", lhr = "London", lux = "Luxembourg", par = "Paris",
-        mad = "Madrid", sto = "Stockholm", vie = "Vienna", waw = "Warsaw",
-        hel = "Helsinki", iad = "Washington", ord = "Chicago", lax = "Los Angeles",
-        sea = "Seattle", dfw = "Dallas", okc = "Oklahoma", gru = "Sao Paulo",
-        sao = "Sao Paulo", scl = "Santiago", lim = "Lima", bog = "Bogota",
-        eat = "Moscow", sto2 = "Stockholm", jhb = "Johannesburg", pwj = "Tianjin",
-        pwg = "Guangzhou", pwz = "Chengdu", tsn = "Tianjin", cpt = "Cape Town",
-    }
-
-    local function decode(id)
-        local code = ""
-        for sh = 24, 0, -8 do
-            local c = floor(id / 2 ^ sh) % 256
-            if c >= 32 and c < 127 then code = code .. string.char(c) end
-        end
-        return (code:gsub("%s", ""))
+local function apply_local_model(pawn, lp)
+    if not fnptr.set_model then return end
+    if not valid(pawn) then return end
+    if not in_game() then return end
+    local path = state.modelAssignments["local"] or state.localModel
+    if path and path ~= "" then
+        if not lp then return end
+        local info = { pawn = lp, raw = pawn, key = "local", is_local = true, idx = 0 }
+        pcall(function() info.idx = lp:GetIndex() end)
+        apply_path_to_player(info, path)
+    else
+        if state.appliedLocalModel == "OFF" then return end
+        state.modelApplied["local"] = nil
+        state.appliedLocalModel = "OFF"
     end
+end
 
-    function RG.label(id)
-        local code = decode(id)
-        local city = CITY[code:lower()]
-        if city then return city .. " (" .. code .. ")" end
-        return code ~= "" and code or ("#" .. id)
+local function assign_models_to_target(mode, selected_key, path)
+    if not in_game() then return 0 end
+    local players = collect_alive_players()
+    local lp_team = 0
+    for _, info in ipairs(players) do
+        if info.is_local then lp_team = info.team; break end
     end
-
-    if type(f) == "table" then
-        local IDX_COUNT, IDX_LIST = 10, 11
-        local TARGETS = {
-            { rva = 0x13F050, steal = 17 },             -- GetPingToDataCenter (vtable idx 8)
-            { rva = 0x13EBB0, steal = 15, call = 10 },  -- GetDirectPingToPOP  (vtable idx 9)
-        }
-
-        local DLL  = "steamnetworkingsockets.dll"
-        local ACCS = { "SteamNetworkingUtils_LibV4", "SteamNetworkingUtils_LibV3", "SteamNetworkingUtils_LibV2" }
-
-        local hmod = f.C.GetModuleHandleA(DLL)
-        local base = hmod ~= nil and tonumber(f.cast("uintptr_t", hmod)) or nil
-        local modSize = 0
-        if base then
-            -- PE SizeOfImage at OptionalHeader+0x38 (PE32+), e_lfanew at 0x3C
-            pcall(function()
-                local e_lfanew = f.cast("uint32_t*", base + 0x3C)[0]
-                modSize = tonumber(f.cast("uint32_t*", base + e_lfanew + 0x50)[0]) or 0
-            end)
+    local count = 0
+    for _, info in ipairs(players) do
+        local match = false
+        if mode == 1 then
+            match = info.is_local
+        elseif mode == 2 then
+            match = (not info.is_local) and info.team == lp_team and lp_team > 1
+        elseif mode == 3 then
+            match = info.team ~= lp_team and info.team > 1
+        elseif mode == 4 then
+            match = selected_key and info.key == selected_key
         end
-
-        local utils, vtbl, getCount, getList
-        if hmod ~= nil then
-            local acc
-            for _, nm in ipairs(ACCS) do
-                local p = f.C.GetProcAddress(hmod, nm)
-                if p ~= nil then acc = p; break end
-            end
-            if acc ~= nil then
-                local ok2, u = pcall(function() return f.cast("void*(*)(void)", acc)() end)
-                if ok2 and u ~= nil then utils = u end
-            end
-            if utils ~= nil then
-                vtbl = f.cast("void***", utils)[0]
-                if vtbl ~= nil then
-                    getCount = f.cast("int(*)(void*)", vtbl[IDX_COUNT])
-                    getList  = f.cast("int(*)(void*, uint32_t*, int)", vtbl[IDX_LIST])
+        if match then
+            if path and path ~= "" then
+                state.modelAssignments[info.key] = path
+                if info.is_local then state.localModel = path end
+                state.modelApplied[info.key] = nil
+                pcall(apply_path_to_player, info, path)
+            else
+                state.modelAssignments[info.key] = nil
+                state.modelApplied[info.key] = nil
+                if info.is_local then
+                    state.localModel = nil
+                    state.appliedLocalModel = nil
                 end
             end
+            count = count + 1
         end
+    end
+    pcall(Config.save)
+    return count
+end
 
-        local w_u8  = function(a, v) f.cast("uint8_t*",  a)[0] = v end
-        local w_i32 = function(a, v) f.cast("int32_t*",  a)[0] = v end
-        local le64  = function(a, v) f.cast("uint64_t*", a)[0] = f.cast("uint64_t", v) end
+local function clear_model_assignments(mode, selected_key)
+    return assign_models_to_target(mode, selected_key, nil)
+end
 
-        local function alloc_near(target)
-            local gran = 0x10000
-            local b = target - (target % gran)
-            for i = 1, 0x8000 do
-                local lo = b - i * gran
-                if lo > 0x10000 then
-                    local p = f.C.VirtualAlloc(f.cast("void*", lo), 64, 0x3000, 0x40)
-                    if p ~= nil then return p end
-                end
-                local p2 = f.C.VirtualAlloc(f.cast("void*", b + i * gran), 64, 0x3000, 0x40)
-                if p2 ~= nil then return p2 end
-            end
-            return nil
-        end
+local function clear_all_model_assignments()
+    state.modelAssignments = {}
+    state.modelApplied = {}
+    state.localModel = nil
+    state.appliedLocalModel = nil
+    pcall(Config.save)
+end
 
-        local hooks, keeps = {}, {}
+local function run()
 
-        local function hookFunc(rva, steal, callOff)
-            if not base or modSize <= 0 or rva <= 0 or (rva + steal + 16) > modSize then
-                return nil
-            end
-            local T  = base + rva
-            local b0 = f.cast("uint8_t*", T)
-            -- skip if target looks like padding / empty (outdated RVA after update)
-            if b0[0] == 0x00 or b0[0] == 0xCC then return nil end
-            local p  = alloc_near(T); if p == nil then return nil end
-            local TR = tonumber(f.cast("uintptr_t", p))
+    local lp = get_live_local()
+    if not lp or not in_game() then
+        if next(state.applied) then state.applied = {} end
+        return
+    end
 
-            local saved = {}
-            for i = 0, steal - 1 do saved[i] = b0[i]; w_u8(TR + i, b0[i]) end
+    local base = mem.GetModuleBase(DLL); if not base then return end
+    local ctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(ctrl) then return end
+    local myHandle = r_u32(ctrl + off.m_hPlayerPawn)
+    if myHandle == 0 or myHandle == 0xFFFFFFFF then return end
 
-            if callOff then
-                local relOrig    = f.cast("int32_t*", T + callOff + 1)[0]
-                local callTarget = (T + callOff + 5) + relOrig
-                local newRel     = callTarget - (TR + callOff + 5)
-                if newRel < -2147483648 or newRel > 2147483647 then return nil end
-                w_i32(TR + callOff + 1, newRel)
-            end
+    local elist = r_ptr(base + off.dwEntityList); if not valid(elist) then return end
+    local pawn = handle_to_entity(elist, myHandle); if not valid(pawn) then return end
+    if not valid(r_ptr(pawn + off.m_pGameSceneNode)) then return end
 
-            w_u8(TR + steal, 0xFF); w_u8(TR + steal + 1, 0x25); w_i32(TR + steal + 2, 0)
-            le64(TR + steal + 6, T + steal)
+    if not pawn_alive(pawn) then
+        if next(state.applied) then state.applied = {} end
+        return
+    end
 
-            local orig = f.cast("int(*)(void*, uint32_t, uint32_t*)", f.cast("void*", TR))
-            local cb = f.cast("int(*)(void*, uint32_t, uint32_t*)", function(self, popid, via)
-                local r = orig(self, popid, via)
-                if RG.enabled and r >= 0 and next(RG.allow) ~= nil then
-                    if RG.allow[tonumber(popid)] then
-                        if RG.minimize then return 1 end
+    local applied = state.applied
+
+    apply_all_model_assignments()
+    apply_local_model(pawn, lp)
+
+    if state.resetGlove then
+        reset_gloves(pawn); state.resetGlove = false
+    elseif state.gloveDef then
+        local c = state.cfg[state.gloveDef]
+        if c then apply_gloves(base, pawn, state.gloveDef, c.paint, c.wear, c.seed) end
+    end
+
+    local ws   = r_ptr(pawn + off.m_pWeaponServices); if not valid(ws) then return end
+    local count= r_i32(ws + off.m_hMyWeapons)
+    local arr  = r_ptr(ws + off.m_hMyWeapons + 8)
+    if count<=0 or count>64 or not valid(arr) then return end
+
+    local kdef = state.knifeDef
+    local kc   = kdef and state.cfg[kdef]
+
+    local did = false
+    for i = 0, count - 1 do
+        local wpn = handle_to_entity(elist, r_u32(arr + i*4))
+        if wpn then
+
+            if r_u32(wpn + off.m_hOwnerEntity) == myHandle then
+                do
+                    local def = r_u16(item_ptr(wpn) + off.m_iItemDefinitionIndex)
+                    if is_knife(def) then
+                        if state.resetKnife and not (kdef and kc) then
+                            restore_knife(wpn, pawn); applied[wpn] = nil; state.resetKnife = false; did = true
+                        elseif kdef and kc then
+                            local s = "k|"..kdef.."|"..kc.paint.."|"..kc.wear.."|"..kc.seed.."|"..tostring(kc.stat).."|"..tostring(kc.statval or 0)
+                            if applied[wpn] ~= s then
+                                process_knife(wpn, kdef, kc.paint, kc.wear, kc.seed, kc.stat, kc.statval); applied[wpn]=s; did=true
+                            end
+                        end
                     else
-                        return r + RG.add
-                    end
-                end
-                return r
-            end)
-            keeps[#keeps + 1] = cb
-
-            local old = f.new("uint32_t[1]")
-            if f.C.VirtualProtect(f.cast("void*", T), steal, 0x40, old) == 0 then return nil end
-            w_u8(T, 0xFF); w_u8(T + 1, 0x25); w_i32(T + 2, 0); le64(T + 6, tonumber(f.cast("uintptr_t", cb)))
-            for i = 14, steal - 1 do w_u8(T + i, 0x90) end
-            f.C.VirtualProtect(f.cast("void*", T), steal, old[0], old)
-            pcall(function() f.C.FlushInstructionCache(f.C.GetCurrentProcess(), f.cast("void*", T), steal) end)
-
-            hooks[#hooks + 1] = { T = T, saved = saved, steal = steal }
-            return orig
-        end
-
-        local function install()
-            if not base then return false end
-            local any = false
-            for _, t in ipairs(TARGETS) do
-                local o = nil
-                pcall(function() o = hookFunc(t.rva, t.steal, t.call) end)
-                if o then
-                    any = true
-                    if not RG.ping then RG.ping = o end
-                end
-            end
-            RG.installed = any
-            return any
-        end
-
-        function RG.uninstall()
-            for _, h in ipairs(hooks) do
-                pcall(function()
-                    local old = f.new("uint32_t[1]")
-                    f.C.VirtualProtect(f.cast("void*", h.T), h.steal, 0x40, old)
-                    for i = 0, h.steal - 1 do w_u8(h.T + i, h.saved[i]) end
-                    f.C.VirtualProtect(f.cast("void*", h.T), h.steal, old[0], old)
-                    f.C.FlushInstructionCache(f.C.GetCurrentProcess(), f.cast("void*", h.T), h.steal)
-                end)
-            end
-            RG.installed = false
-        end
-
-        local function pingOf(id)
-            if not RG.ping then return nil end
-            local r
-            pcall(function()
-                local via = f.new("uint32_t[1]")
-                r = RG.ping(nil, id, via)
-            end)
-            if r and r >= 0 and r < 100000 then return r end
-            return nil
-        end
-
-        local function enumerate()
-            if utils == nil or not getCount or not getList then return end
-            local n = getCount(utils)
-            if n <= 0 then return end
-            if n > 256 then n = 256 end
-            local buf = f.new("uint32_t[?]", n)
-            local got = getList(utils, buf, n)
-            if got < 0 then return end
-            if got > n then got = n end
-            local all, hasPing = {}, {}
-            for i = 0, got - 1 do
-                local id    = tonumber(buf[i])
-                local known = CITY[decode(id):lower()] ~= nil
-                local ping  = pingOf(id)
-                local nm    = RG.label(id) .. (ping and ("  " .. ping .. "ms") or "")
-                local e = { id = id, name = nm, known = known, ping = ping }
-                all[#all + 1] = e
-                if ping ~= nil and ping <= 250 then hasPing[#hasPing + 1] = e end
-            end
-            local use = (#hasPing > 0) and hasPing or all
-            table.sort(use, function(a, b)
-                if (a.ping ~= nil) ~= (b.ping ~= nil) then return a.ping ~= nil end
-                if a.ping and b.ping and a.ping ~= b.ping then return a.ping < b.ping end
-                if a.known ~= b.known then return a.known end
-                return a.name < b.name
-            end)
-            local ids, names = {}, {}
-            for _, e in ipairs(use) do ids[#ids + 1] = e.id; names[#names + 1] = e.name end
-            if #ids > 0 then RG.ids = ids; RG.names = names end
-        end
-        RG.enumerate = enumerate
-
-        local okI = false
-        -- Disabled: hardcoded steamnetworkingsockets RVAs cause execute AV on inject after update
-        -- pcall(function() okI = install() end)
-        -- if utils ~= nil and vtbl ~= nil then pcall(enumerate) end
-        if utils ~= nil and vtbl ~= nil then pcall(enumerate) end
-        RG.ok = okI
-        if okI then print("[mahanmoi] region: hooked " .. #hooks .. " fns (" .. #RG.ids .. " pops)")
-        else            print("[mahanmoi] region: auto-install disabled (safe mode)") end
-    end
-
-    if #RG.names == 0 then RG.names = { "[ join a server, then Refresh ]" } end
-end
-pcall(function() callbacks.Register("Unload", function() pcall(RG.uninstall) end) end)
-
-local NC = { ok = false, installed = false, enabled = false }
-do
-    local f = ffi
-    local DLL  = "engine2.dll"
-    local SIG_SETINFO = "40 55 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 45 33 FF"
-    local STEAL = 16
-    local NAME_OFF, KEY_OFF, VAL_OFF = 0x440, 0x8, 0x10
-
-    local T, orig, keepCb
-
-    local function w_u8(a, v)  f.cast("uint8_t*",  a)[0] = v end
-    local function w_i32(a, v) f.cast("int32_t*",  a)[0] = v end
-    local function le64(a, v)  f.cast("uint64_t*", a)[0] = f.cast("uint64_t", v) end
-
-    local function alloc_near(target)
-        local gran = 0x10000
-        local b = target - (target % gran)
-        for i = 1, 0x8000 do
-            local lo = b - i * gran
-            if lo > 0x10000 then
-                local p = f.C.VirtualAlloc(f.cast("void*", lo), 64, 0x3000, 0x40)
-                if p ~= nil then return p end
-            end
-            local p2 = f.C.VirtualAlloc(f.cast("void*", b + i * gran), 64, 0x3000, 0x40)
-            if p2 ~= nil then return p2 end
-        end
-        return nil
-    end
-
-    function NC.setName(s)
-        s = tostring(s or "")
-        if #s == 0 then NC._buf = nil; return end
-        NC._buf = f.new("char[?]", #s + 1, s)
-    end
-
-    local function onSetInfo(rcx, a2)
-        if NC.enabled and NC._buf ~= nil and a2 ~= nil then
-            pcall(function()
-                local a2n = tonumber(f.cast("uintptr_t", a2))
-                if a2n and a2n >= 0x1000 then
-                    local arg_list = r_ptr(a2n + NAME_OFF)
-                    if arg_list and arg_list >= 0x1000 then
-                        local key = r_ptr(arg_list + KEY_OFF)
-                        if valid(key) then
-                            local ks = f.string(f.cast("const char*", key))
-                            if ks:lower() == "name" then
-                                f.cast("const char**", arg_list + VAL_OFF)[0] = f.cast("const char*", NC._buf)
+                        if state.pendingReset[def] then
+                            restore_weapon(wpn); applied[wpn] = nil; state.pendingReset[def] = nil; did = true
+                        else
+                            local c = state.cfg[def]
+                            if c then
+                                if c.paint > 0 then
+                                    local s = "w|"..c.paint.."|"..c.wear.."|"..c.seed.."|"..tostring(c.stat).."|"..tostring(c.statval or 0)
+                                    if applied[wpn] ~= s then
+                                        process_weapon(wpn, c.paint, c.wear, c.seed, c.stat, c.statval); applied[wpn]=s; did=true
+                                    end
+                                else
+                                    local s = "w|none"
+                                    if applied[wpn] ~= s then
+                                        restore_weapon(wpn); applied[wpn]=s; did=true
+                                    end
+                                end
                             end
                         end
                     end
                 end
-            end)
-        end
-        return orig(rcx, a2)
-    end
-
-    local function install()
-        if type(f) ~= "table" then print("[mahanmoi] namechanger: no ffi"); return false end
-        local a = mem.FindPattern(DLL, SIG_SETINFO)
-        if not a or a == 0 then print("[mahanmoi] namechanger: sig not found"); return false end
-        T = a
-        local b0 = f.cast("uint8_t*", T)
-        local p = alloc_near(T); if p == nil then print("[mahanmoi] namechanger: alloc failed"); return false end
-        local TR = tonumber(f.cast("uintptr_t", p))
-
-        local saved = {}
-        for i = 0, STEAL - 1 do saved[i] = b0[i]; w_u8(TR + i, b0[i]) end
-        w_u8(TR + STEAL, 0xFF); w_u8(TR + STEAL + 1, 0x25); w_i32(TR + STEAL + 2, 0)
-        le64(TR + STEAL + 6, T + STEAL)
-
-        orig = f.cast("char (*)(void*, void*)", f.cast("void*", TR))
-        keepCb = f.cast("char (*)(void*, void*)", onSetInfo)
-
-        local old = f.new("uint32_t[1]")
-        if f.C.VirtualProtect(f.cast("void*", T), STEAL, 0x40, old) == 0 then
-            print("[mahanmoi] namechanger: protect failed"); return false
-        end
-        w_u8(T, 0xFF); w_u8(T + 1, 0x25); w_i32(T + 2, 0)
-        le64(T + 6, tonumber(f.cast("uintptr_t", keepCb)))
-        for i = 14, STEAL - 1 do w_u8(T + i, 0x90) end
-        f.C.VirtualProtect(f.cast("void*", T), STEAL, old[0], old)
-        pcall(function() f.C.FlushInstructionCache(f.C.GetCurrentProcess(), f.cast("void*", T), STEAL) end)
-
-        NC._saved = saved
-        NC.installed = true
-        return true
-    end
-
-    function NC.uninstall()
-        if not (NC.installed and T and NC._saved) then return end
-        pcall(function()
-            local old = f.new("uint32_t[1]")
-            f.C.VirtualProtect(f.cast("void*", T), STEAL, 0x40, old)
-            for i = 0, STEAL - 1 do w_u8(T + i, NC._saved[i]) end
-            f.C.VirtualProtect(f.cast("void*", T), STEAL, old[0], old)
-            f.C.FlushInstructionCache(f.C.GetCurrentProcess(), f.cast("void*", T), STEAL)
-        end)
-        NC.installed = false
-    end
-
-    local CVAR_RVA, RESOLVE_RVA = 0x685698, 0x3FC080
-    local VT_FIND, FLAGS_OFF    = 0x58, 0x30
-    local F_USERINFO, F_PROTECTED = 0x200, 0x2
-    local bit_ = rawget(_G, "bit")
-
-    function NC.fixFlags()
-        if type(f) ~= "table" or not bit_ then return false end
-        if NC._flags then
-            local p = f.cast("uint32_t*", NC._flags)
-            p[0] = bit_.band(bit_.bor(p[0], F_USERINFO), bit_.bnot(F_PROTECTED))
-            return true
-        end
-        local base = mem.GetModuleBase(DLL); if not base then return false end
-        local cvar = r_ptr(base + CVAR_RVA);  if not valid(cvar) then return false end
-        local vt   = r_ptr(cvar);             if not valid(vt)   then return false end
-        local findAddr = r_ptr(vt + VT_FIND); if not valid(findAddr) then return false end
-        local findfn  = f.cast("uint64_t (*)(void*, void*, const char*, int)", findAddr)
-        local resolve = f.cast("void* (*)(void*, uint32_t, int16_t)", base + RESOLVE_RVA)
-        local nameC   = f.new("char[5]", "name")
-        local outbuf  = f.new("uint8_t[64]")
-        local res     = f.new("uint64_t[4]")
-        local done = false
-        NC._diag = { base = base, cvar = cvar, vt = vt, find = findAddr }
-        pcall(function()
-            local ref = tonumber(findfn(f.cast("void*", cvar), outbuf, nameC, 1))
-            NC._diag.ref = ref
-            if not ref or ref < 0x10000 then return end
-            local handle = f.cast("uint32_t*", ref)[0]
-            NC._diag.handle = tonumber(handle)
-            resolve(res, handle, -1)
-            local obj = tonumber(res[1])
-            NC._diag.obj = obj
-            if not valid(obj) then return end
-            NC._flags = obj + FLAGS_OFF
-            local p = f.cast("uint32_t*", NC._flags)
-            NC._diag.old = tonumber(p[0])
-            p[0] = bit_.band(bit_.bor(p[0], F_USERINFO), bit_.bnot(F_PROTECTED))
-            NC._diag.new = tonumber(p[0])
-            done = true
-        end)
-        return done
-    end
-
-    function NC.dump()
-        local d = NC._diag or {}
-        local function hx(v) return v and string.format("%X", v) or "nil" end
-        print("[mahanmoi] NC: base=" .. hx(d.base) .. " cvar=" .. hx(d.cvar) ..
-              " vt=" .. hx(d.vt) .. " find=" .. hx(d.find) .. " ref=" .. hx(d.ref) ..
-              " handle=" .. tostring(d.handle) .. " obj=" .. hx(d.obj) ..
-              " flags " .. hx(d.old) .. "->" .. hx(d.new))
-    end
-
-    function NC.steamName()
-        if type(f) ~= "table" then return nil end
-        if NC._steam then return NC._steam end
-        local h = f.C.GetModuleHandleA("steam_api64.dll"); if h == nil then return nil end
-        local getName = f.C.GetProcAddress(h, "SteamAPI_ISteamFriends_GetPersonaName")
-        if getName == nil then return nil end
-        local accFn
-        for _, v in ipairs({ "SteamAPI_SteamFriends_v017", "SteamAPI_SteamFriends_v018",
-                             "SteamAPI_SteamFriends_v019", "SteamAPI_SteamFriends_v016",
-                             "SteamAPI_SteamFriends_v020" }) do
-            local p = f.C.GetProcAddress(h, v)
-            if p ~= nil then accFn = p; break end
-        end
-        if accFn == nil then return nil end
-        local res
-        pcall(function()
-            local iface = f.cast("void* (*)(void)", accFn)()
-            if iface == nil then return end
-            local s = f.cast("const char* (*)(void*)", getName)(iface)
-            if s ~= nil then
-                local str = f.string(s)
-                if #str > 0 and #str < 64 then res = str end
             end
-        end)
-        if res then NC._steam = res end
-        return res
-    end
-
-    function NC.origName()
-        return NC.steamName() or NC._captured
-    end
-
-    local okI = false
-    -- Disabled: SetInfo code patch crashes on inject after CS2 update
-    -- pcall(function() okI = install() end)
-    NC.ok = okI
-    if okI then print("[mahanmoi] namechanger: hooked SetInfo @ " .. string.format("%X", T))
-    else        print("[mahanmoi] namechanger: auto-install disabled (safe mode)") end
-end
-pcall(function() callbacks.Register("Unload", function() pcall(NC.uninstall) end) end)
-
-local CHAT = { ok = false }
-do
-    local f = ffi
-    local SIG_CHAT = "4C 89 4C 24 20 53 56 B8 38 10 00 00 E8 ?? ?? ?? ?? 48 2B E0 48 8B 0D ?? ?? ?? ?? 41 8B D8 48 8B F2"
-    local fn, flags
-    if type(f) == "table" then
-        local a = mem.FindPattern("client.dll", SIG_CHAT)
-        if a and a ~= 0 then
-            fn    = f.cast("void(*)(void*, void*, uint32_t, const char*, const char*)", f.cast("void*", a))
-            flags = f.new("int[1]", 0x0100)
-            CHAT.ok = true
-            print("[mahanmoi] chat: hooked print @ " .. string.format("%X", a))
-        else
-            print("[mahanmoi] chat: print sig not found")
         end
     end
-    function CHAT.print(text)
-        if not (CHAT.ok and fn) then return false end
-        return pcall(function() fn(nil, flags, 0, "%s", tostring(text)) end)
-    end
+    if did and fnptr.regen_skins then fnptr.regen_skins() end
 end
 
-local VR = { q = {} }
-do
-    local G, R, W, P = string.char(4), string.char(2), string.char(1), string.char(14)
-    local function pfx() return "[" .. P .. "mahanmoi" .. W .. "] " end
-
-    local function startMsg(initiator, target)
-        return pfx() .. initiator .. " started a vote to kick " .. target,
-               initiator .. " wants to kick " .. target
-    end
-    local function castMsg(name, yes)
-        local yn = yes and (G .. "yes" .. W) or (R .. "no" .. W)
-        return pfx() .. name .. " voted " .. yn,
-               name .. " voted " .. (yes and "yes" or "no")
-    end
-
-    local function push(chat, note, kind) VR.q[#VR.q + 1] = { chat = chat, note = note, kind = kind } end
-
-    local function pname(slot)
-        if not slot or slot < 0 then return "player" end
-        local n = HS.nameBySlot(slot)
-        if type(n) == "string" and #n > 0 and #n < 64 then return n end
-        return "player"
-    end
-
-    function VR.flush()
-        local total = #VR.q; if total == 0 then return end
-        local q = VR.q; VR.q = {}
-        local mode = (VR._mode and VR._mode()) or 3
-        for i = 1, total do
-            local it = q[i]
-            if mode == 1 or mode == 3 then pcall(function() CHAT.print(it.chat) end) end
-            if mode == 2 or mode == 3 then pcall(function() M:Notify(it.note, it.kind) end) end
-        end
-    end
-
-    function VR.test()
-        local a, b = startMsg("initiator", "target"); push(a, b, "info")
-        local c, d = castMsg("player", true);  push(c, d, "success")
-        local e, g = castMsg("player", false); push(e, g, "error")
-    end
-
-    function VR.onEvent(ev)
-        if not (VR._on and VR._on()) then return end
-        local name
-        pcall(function() name = ev:GetName() end)
-        if name == "vote_cast" then
-            local opt
-            pcall(function() opt = ev:GetInt("vote_option") end)
-            if opt == nil or opt < 0 then return end
-            local voter
-            pcall(function() voter = ev:GetInt("userid") end)
-            local yes = (opt == 0)
-            local c, n = castMsg(pname(voter), yes)
-            push(c, n, yes and "success" or "error")
-        elseif name == "vote_started" or name == "vote_begin" then
-            local initiator
-            pcall(function() initiator = ev:GetInt("entityid") end)
-            if not initiator or initiator <= 0 then pcall(function() initiator = ev:GetInt("userid") end) end
-            local tid
-            pcall(function()
-                local disp = ev:GetString("disp_str")
-                if type(disp) == "string" then
-                    local m = disp:match(":(%d+):")
-                    if m then tid = tonumber(m) end
-                end
-            end)
-            local c, n = startMsg(pname(initiator), tid and pname(tid) or "player")
-            push(c, n, "info")
-        end
-    end
-end
-pcall(function()
-    for _, e in ipairs({ "player_hurt", "weapon_fire", "vote_started", "vote_begin", "vote_cast" }) do
-        pcall(function() client.AllowListener(e) end)
-    end
-    callbacks.Register("FireGameEvent", "FemboyTap_Events", function(ev)
-        pcall(HS.onEvent, ev)
-        pcall(VR.onEvent, ev)
-    end)
-end)
-
-local tab = M:Tab("Skins")
-
-tab:Row()
-weaponLb = tab:Section("Weapons"):Listbox("", C.names, "fill", 1)
-
-tab:Col()
-local sSec = tab:Section("Skins")
-skinLb = sSec:Listbox("", { "[ select a weapon ]" }, "fill", 1)
-skinWd = sSec.ws[#sSec.ws]
-
-tab:Col()
-local setSec = tab:Section("Settings")
-sWear  = setSec:Slider("Wear / Float", 0.0001, 0.0, 1.0, 0.001, "%.3f")
-sSeed  = setSec:Slider("Seed", 0, 0, 1000, 1)
-cbAuto = setSec:Checkbox("Auto select weapon", false)
-
-local actSec = tab:Section("Actions")
-actSec:Button("Remove",    function() C.remove(item()) end)
-actSec:Button("Reset All", function() C.resetAll() end)
-
-local cfgSec = tab:Section("Config")
-cfgSec:Button("Reset config", function() C.clearConfig() end)
-
-local vtab = M:Tab("Visuals")
-
-local submodels = vtab:Sub("Models")
-submodels:Row()
-local vSec = submodels:Section("List")
-local mNames
-mNames, modelPaths = C.modelList()
-modelLb = vSec:Listbox("", mNames, 300, 1)
-modelWd = vSec.ws[#vSec.ws]
-submodels:Col()
-local vSsec = submodels:Section("Scan")
-local cbModelAlt = vSsec:Checkbox("Characters only (skip exg/materials)", C.getModelScanAlt())
-local inpModelSearch = vSsec:Input("Search name", C.getModelFilter(), "filter by name...")
-local function reloadModelList()
-    C.setModelScanAlt(cbModelAlt:Get())
-    C.setModelFilter(inpModelSearch:Get() or "")
-    local cur = C.getLocalModel()
-    local n, p = C.refreshModels()
-    modelPaths     = p
-    modelWd.items  = n
-    modelWd.value  = 1
-    modelWd.scroll = 0
-    if cur then
-        for i = 2, #p do if p[i] == cur then modelWd.value = i; break end end
-    end
-    lastModelSel = modelWd.value
-end
-vSsec:Button("Refresh models", reloadModelList)
-vSsec:Button("Apply search", reloadModelList)
-
-local lastModelAlt = cbModelAlt:Get()
-local function syncModelSearch()
-    if not cbModelAlt then return end
-    local alt = cbModelAlt:Get()
-    if alt == lastModelAlt then return end
-    lastModelAlt = alt
-    reloadModelList()
+local function active_weapon_def()
+    if not get_live_local() then return nil end
+    local base = mem.GetModuleBase(DLL); if not base then return nil end
+    local ctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(ctrl) then return nil end
+    local elist = r_ptr(base + off.dwEntityList)
+    local pawn = handle_to_entity(elist, r_u32(ctrl + off.m_hPlayerPawn)); if not valid(pawn) then return nil end
+    local ws   = r_ptr(pawn + off.m_pWeaponServices); if not valid(ws) then return nil end
+    local wpn  = handle_to_entity(elist, r_u32(ws + off.m_hActiveWeapon)); if not wpn then return nil end
+    return r_u16(item_ptr(wpn) + off.m_iItemDefinitionIndex)
 end
 
--- Apply stays in the SAME right column under Scan (second Row was pushed off-screen by List fill)
-local vAsec = submodels:Section("Apply")
-local TARGET_OPTS = { "Myself", "Teammates", "Enemies", "Selected player" }
-local cmbModelTarget = vAsec:Combo("Apply target", TARGET_OPTS, 1)
-local cmbModelPlayer = vAsec:Combo("Player", { "(refresh in-game)" }, 1)
-local cmbModelPlayerWd = vAsec.ws[#vAsec.ws]
-local cbModelPersist = vAsec:Checkbox("Persist (reapply each round)", C.getModelPersist and C.getModelPersist() or true)
-local playerListData = {}
+local CFG_FILE = "awchanger.txt"
 
-local function refreshPlayerCombo()
-    local players = {}
+local function file_write(path, data)
+    local ok = false
     pcall(function()
-        if C.listPlayers then players = C.listPlayers() or {} end
+        local f = file.Open(path, "w")
+        if f then f:Write(data); f:Close(); ok = true end
     end)
-    table.sort(players, function(a, b)
-        if a.is_local ~= b.is_local then return a.is_local end
-        return (a.name or "") < (b.name or "")
+    return ok
+end
+
+local function file_read(path)
+    local data
+    pcall(function()
+        local f = file.Open(path, "r")
+        if f then data = f:Read(); f:Close() end
     end)
-    playerListData = players
-    local names = {}
-    for i, info in ipairs(players) do
-        local label = info.name or ("#" .. tostring(info.idx))
-        if info.is_local then label = label .. " [You]" end
-        names[#names + 1] = label
+    return data
+end
+
+function Config.serialize()
+    local lines = { "AWCFG1",
+                    "K " .. tostring(state.knifeDef or 0),
+                    "G " .. tostring(state.gloveDef or 0) }
+    for def, c in pairs(state.cfg) do
+        lines[#lines + 1] = string.format("E %d %d %.6f %d %d %s %d",
+            def, c.paint or 0, c.wear or 0.0001, c.seed or 0, c.stat and 1 or 0, c.kind or "weapon", c.statval or 0)
     end
-    if #names == 0 then names[1] = "(no alive players)" end
-    if cmbModelPlayerWd then
-        cmbModelPlayerWd.options = names
-        if (cmbModelPlayerWd.value or 1) > #names then cmbModelPlayerWd.value = 1 end
+    for k, v in pairs(state.opts) do
+        local tv = type(v)
+        local tag = (tv == "boolean") and "b" or (tv == "number") and "n" or "s"
+        local sv  = (tv == "boolean") and (v and "1" or "0") or tostring(v)
+        lines[#lines + 1] = string.format("O %s %s %s", k, tag, sv)
     end
-end
-
-local function selectedModelPath()
-    local sel = modelLb and modelLb:Get() or 1
-    if not modelPaths or sel <= 1 then return nil end
-    local p = modelPaths[sel]
-    if type(p) == "string" and p ~= "" then return p end
-    return nil
-end
-
-local function selectedPlayerKey()
-    local sel = cmbModelPlayer:Get() or 1
-    local info = playerListData[sel]
-    return info and info.key or nil
-end
-
-vAsec:Button("Refresh players", function()
-    refreshPlayerCombo()
-    pcall(function() M:Notify("players: " .. tostring(#playerListData)) end)
-end)
-vAsec:Button("Apply model to target", function()
-    local path = selectedModelPath()
-    if not path then pcall(function() M:Notify("select a model first") end); return end
-    local mode = cmbModelTarget:Get() or 1
-    pcall(function() C.setModelPersist(cbModelPersist:Get()) end)
-    local n = 0
-    pcall(function() n = C.applyModelTarget(mode, selectedPlayerKey(), path) or 0 end)
-    pcall(function() M:Notify(string.format("applied to %d player(s)", n)) end)
-end)
-vAsec:Button("Clear target models", function()
-    local mode = cmbModelTarget:Get() or 1
-    local n = 0
-    pcall(function() n = C.clearModelTarget(mode, selectedPlayerKey()) or 0 end)
-    pcall(function() M:Notify(string.format("cleared %d assignment(s)", n)) end)
-end)
-vAsec:Button("Clear all model assignments", function()
-    pcall(function() C.clearAllModels() end)
-    lastModelSel = 1
-    if modelWd then modelWd.value = 1 end
-    pcall(function() M:Notify("all model assignments cleared") end)
-end)
-
-local lastPersist = cbModelPersist:Get()
-local function syncModelPersist()
-    local on = cbModelPersist:Get()
-    if on == lastPersist then return end
-    lastPersist = on
-    pcall(function() C.setModelPersist(on) end)
-end
-
-local playerRefreshTick = 0
-local function syncPlayerList()
-    playerRefreshTick = playerRefreshTick + 1
-    if playerRefreshTick < 120 then return end
-    if playerRefreshTick == 120 or playerRefreshTick % 300 == 0 then
-        pcall(refreshPlayerCombo)
+    if state.localModel and state.localModel ~= "" then
+        lines[#lines + 1] = "L " .. state.localModel
     end
+    lines[#lines + 1] = "P " .. (state.modelPersist and "1" or "0")
+    for key, path in pairs(state.modelAssignments) do
+        if key ~= "local" and type(path) == "string" and path ~= "" then
+            lines[#lines + 1] = "A " .. key .. " " .. path
+        end
+    end
+    return table.concat(lines, "\n")
 end
 
-local sublocal = vtab:Sub("Local")
-sublocal:Row()
-local localSection = sublocal:Section("Local player")
-cbVm = localSection:Checkbox("Viewmodel override", false)
-vmX  = localSection:Slider("Offset X", 0, -30, 30, 0.1, "%.1f")
-vmY  = localSection:Slider("Offset Y", 0, -30, 30, 0.1, "%.1f")
-vmZ  = localSection:Slider("Offset Z", 0, -30, 30, 0.1, "%.1f")
-
-local subsound = vtab:Sub("Sounds")
-subsound:Row()
-local hsSec = subsound:Section("Hit sound")
-hsOn    = hsSec:Checkbox("Enabled", true)
-hsCmb   = hsSec:Combo("Sound", SND_NAMES, 1)
-hsCmbWd = hsSec.ws[#hsSec.ws]
-hsVol   = hsSec:Slider("Volume", 100, 0, 100, 1, "%.0f")
-
-subsound:Col()
-local ksSec = subsound:Section("Kill sound")
-ksOn    = ksSec:Checkbox("Enabled", false)
-ksCmb   = ksSec:Combo("Sound", SND_NAMES, 1)
-ksCmbWd = ksSec.ws[#ksSec.ws]
-ksVol   = ksSec:Slider("Volume", 100, 0, 100, 1, "%.0f")
-
-subsound:Col()
-local tSec = subsound:Section("Preview")
-tSec:Button("Play hit",  function() HS.playHit() end)
-tSec:Button("Play kill", function() HS.playKill() end)
-tSec:Button("Rescan", function()
-    local n, p = HS.scan()
-    SND_PATHS = p
-    hsCmbWd.options = n; hsCmbWd.value = 1
-    ksCmbWd.options = n; ksCmbWd.value = 1
-end)
-tSec:Button("Open folder", function() HS.openSoundDir() end)
-
-local subhl = vtab:Sub("Hitlogs")
-subhl:Row()
-local hlSet = subhl:Section("Hitlog")
-hlOn = hlSet:Checkbox("Enabled", true)
-hlSet:Button("Reset position", function() M:HitlogResetPos() end)
-
-subhl:Col()
-local hlTypes = subhl:Section("Types")
-hlHit  = hlTypes:Checkbox("Hit",  true)
-hlKill = hlTypes:Checkbox("Kill", true)
-hlHurt = hlTypes:Checkbox("Hurt", true)
-hlMiss = hlTypes:Checkbox("Miss", false)
-hlTypes:Button("Test", function()
-    local d = math.random(8, 60)
-    M:Hitlog("hit",  d, "hit player in head for " .. d .. "hp")
-    M:Hitlog("kill", d, "killed player in head for " .. d .. "hp")
-    M:Hitlog("miss", nil, "missed shot")
-end)
-
-subhl:Col()
-local hlCol = subhl:Section("Colors")
-local cMiss = hlCol:ColorPicker("Miss", { 235, 90, 90 })
-local cHit  = hlCol:ColorPicker("Hit",  { 139, 124, 246 })
-local cHurt = hlCol:ColorPicker("Hurt", { 245, 170, 70 })
-local cKill = hlCol:ColorPicker("Kill", { 80, 200, 120 })
-
-local WM_PARTS = { "cheat", "lua", "user", "nick", "fps", "ping" }
-local WM_POS   = { "top-left", "top-right", "bottom-left", "bottom-right" }
-
-local subwm = vtab:Sub("Watermark")
-subwm:Row()
-local wmSec = subwm:Section("Watermark")
-wmOn    = wmSec:Checkbox("Enabled", true)
-wmElems = wmSec:MultiCombo("Elements",
-    { "Cheat name", "Lua name", "Username", "Nickname", "fps", "ping" }, { 2, 4, 5, 6 })
-wmPos   = wmSec:Combo("Position", { "Top left", "Top right", "Bottom left", "Bottom right" }, 2)
-
-local ncClock = (function()
-    for _, fn in ipairs({ function() return globals.RealTime() end,
-                          function() return globals.CurTime() end,
-                          function() return os.clock() end }) do
-        local ok, v = pcall(fn)
-        if ok and type(v) == "number" then return fn end
-    end
-    return function() return 0 end
-end)()
-
-local NC_LEET = {
-    a = { "@", "4" }, b = { "6", "8" }, c = { "<" },
-    e = { "3" },      f = { "ph" },     g = { "9", "6" }, h = { "#" },
-    i = { "1", "!" },     l = { "1" },
-    m = { "|\\/|" },  n = { "|\\|" },   o = { "0" },
-    r = { "|2" },     s = { "$" }, t = { "7" },
-    v = { "\\/" },    z = { "2" },
-}
-
-local function ncGlitch(target)
-    local function corrupt()
-        local chars = {}
-        for i = 1, #target do
-            local c = target:sub(i, i)
-            local alt = NC_LEET[c:lower()]
-            if i > 1 and i < #target and alt and math.random() < 0.4 then
-                c = alt[math.random(#alt)]
+function Config.parse(str)
+    if type(str) ~= "string" or not str:find("AWCFG1", 1, true) then return nil end
+    local newCfg, kdef, gdef, opts, lmodel = {}, nil, nil, {}, nil
+    local persist, assigns = true, {}
+    for line in str:gmatch("[^\r\n]+") do
+        local t = line:sub(1, 1)
+        if t == "K" then
+            local v = tonumber(line:match("^K%s+(%-?%d+)")); if v and v ~= 0 then kdef = v end
+        elseif t == "G" then
+            local v = tonumber(line:match("^G%s+(%-?%d+)")); if v and v ~= 0 then gdef = v end
+        elseif t == "E" then
+            local d, p, w, s, st, kind, sv =
+                line:match("^E%s+(%-?%d+)%s+(%-?%d+)%s+([%d%.eE%+%-]+)%s+(%-?%d+)%s+(%d)%s+(%a+)%s*(%d*)")
+            d, p, w, s = tonumber(d), tonumber(p), tonumber(w), tonumber(s)
+            if d then
+                newCfg[d] = { paint = p or 0, wear = w or 0.0001, seed = s or 0,
+                              stat = (st == "1"), kind = kind or "weapon", statval = tonumber(sv) or 0 }
             end
-            chars[i] = c
-        end
-        return table.concat(chars)
-    end
-    local seq = {}
-    local function burst(n)
-        for _ = 1, n do seq[#seq + 1] = { t = corrupt(), ms = 55 } end
-    end
-    burst(6)
-    seq[#seq + 1] = { t = target, ms = 2000 }
-    burst(6)
-    seq[#seq + 1] = { t = target, ms = 2000 }
-    return seq
-end
-
-local NC_FEM = {
-    { t = "",          ms = 550 },
-    { t = "$F",         ms = 55 },  { t = "$f",         ms = 85 },
-    { t = "$f3",        ms = 55 },  { t = "$fe",        ms = 85 },
-    { t = "$fe|\\/|",   ms = 55 },  { t = "$fem",       ms = 85 },
-    { t = "$fem6",      ms = 55 },  { t = "$femb",      ms = 85 },
-    { t = "$femb0",     ms = 55 },  { t = "$fembo",     ms = 85 },
-    { t = "$femboY",    ms = 55 },  { t = "$femboy",    ms = 85 },
-    { t = "$femboyT",   ms = 55 },  { t = "$femboyt",   ms = 85 },
-    { t = "$femboyt@",  ms = 55 },  { t = "$femboyta",  ms = 85 },
-    { t = "$femboytaP", ms = 55 },  { t = "$mahanmoi", ms = 90 },
-    { t = "$mahanmoi",  ms = 70 }, { t = "$mahanmoi$", ms = 2000 },
-    { t = "$mahanmoi",  ms = 70 }, { t = "$mahanmoi",   ms = 70 },
-    { t = "$femboyta",  ms = 60 },  { t = "$femboyt",   ms = 60 },
-    { t = "$femboy",    ms = 60 },  { t = "$fembo",     ms = 60 },
-    { t = "$femb",      ms = 60 },  { t = "$fem",       ms = 60 },
-    { t = "$fe",        ms = 60 },  { t = "$f",         ms = 60 },
-}
-
-local NC_AIM = {
-    { t = "",            ms = 450 },
-    { t = "[A]",           ms = 120 },  { t = "[AI]",          ms = 120 },
-    { t = "[AIM]",         ms = 120 },  { t = "[AIMW]",        ms = 120 },
-    { t = "[AIMWA]",       ms = 120 },  { t = "[AIMWAR]",      ms = 120 },
-    { t = "[AIMWARE]",     ms = 110 }, { t = "[AIMWARE.]",    ms = 120 },
-    { t = "[AIMWARE.N]",   ms = 90 },  { t = "[AIMWARE.NE]",  ms = 120 },
-    { t = "[AIMWARE.NET]", ms = 2000 },
-    { t = "[AIMWARE.NE]",  ms = 120 },  { t = "[AIMWARE.N]",   ms = 120 },
-    { t = "[AIMWARE.]",    ms = 120 },  { t = "[AIMWARE]",     ms = 120 },
-    { t = "[AIMWAR]",      ms = 120 },  { t = "[AIMWA]",       ms = 120 },
-    { t = "[AIMW]",        ms = 120 },  { t = "[AIM]",         ms = 120 },
-    { t = "[AI]",          ms = 120 },  { t = "[A]",           ms = 120 },
-}
-
-local NC_FEM_G = ncGlitch("$mahanmoi$")
-local NC_AIM_G = ncGlitch("[AIMWARE.NET]")
-
-local function ncParse(str, defMs)
-    local frames = {}
-    for tok in (str .. ","):gmatch("([^,]*),") do
-        if tok ~= "" then
-            local t, ms = tok:match("^(.-):(%d+)$")
-            if t then frames[#frames + 1] = { t = t, ms = tonumber(ms) }
-            else      frames[#frames + 1] = { t = tok, ms = defMs } end
+        elseif t == "O" then
+            local k, tag, v = line:match("^O%s+(%S+)%s+(%a)%s+(.*)$")
+            if k then
+                if     tag == "b" then opts[k] = (v == "1")
+                elseif tag == "n" then opts[k] = tonumber(v) or 0
+                else                   opts[k] = v end
+            end
+        elseif t == "L" then
+            local v = line:match("^L%s+(.+)$")
+            if v and v ~= "" then lmodel = v end
+        elseif t == "P" then
+            local v = line:match("^P%s+(%d)")
+            persist = (v == "1")
+        elseif t == "A" then
+            local k, p = line:match("^A%s+(%S+)%s+(.+)$")
+            if k and p and p ~= "" then assigns[k] = p end
         end
     end
-    return frames
+    return newCfg, kdef, gdef, opts, lmodel, persist, assigns
 end
 
-local function ncFrameAt(seq, t, factor)
-    factor = factor or 1
-    local n = #seq; if n == 0 then return "" end
-    local total = 0
-    for i = 1, n do total = total + seq[i].ms * factor end
-    if total <= 0 then return seq[1].t end
-    local ms  = (t * 1000) % total
-    local acc = 0
-    for i = 1, n do
-        acc = acc + seq[i].ms * factor
-        if ms < acc then return seq[i].t end
+function Config.applyTable(newCfg, kdef, gdef, opts, lmodel, persist, assigns)
+    for def, c in pairs(state.cfg) do
+        if c.kind == "weapon" and not newCfg[def] then state.pendingReset[def] = true end
     end
-    return seq[n].t
+    if state.knifeDef and state.knifeDef ~= kdef then state.resetKnife = true end
+    if state.gloveDef and state.gloveDef ~= gdef then state.resetGlove = true end
+    state.cfg      = newCfg
+    state.knifeDef = kdef
+    state.gloveDef = gdef
+    state.opts     = opts or {}
+    state.localModel = lmodel
+    state.appliedLocalModel = nil
+    state.applied  = {}
+    state.modelPersist = (persist ~= false)
+    state.modelAssignments = assigns or {}
+    if lmodel and lmodel ~= "" then state.modelAssignments["local"] = lmodel end
+    state.modelApplied = {}
+    g_modelScanAlt = not not state.opts.model_scan_alt
+    g_modelFilter  = type(state.opts.model_filter) == "string" and state.opts.model_filter or ""
+    g_modelNames, g_modelPaths = nil, nil
 end
 
-local function ncValue(t)
-    local src = ncSrc and ncSrc:Get() or 1
-    local glitch = ncStyle and ncStyle:Get() == 2
-    local s
-    if src == 2 then
-        s = ncFrameAt(glitch and NC_FEM_G or NC_FEM, t, (ncSpeed:Get() or 400) / 400)
-    elseif src == 3 then
-        s = ncFrameAt(glitch and NC_AIM_G or NC_AIM, t, (ncSpeed:Get() or 400) / 400)
-    elseif src == 4 then
-        s = ncFrameAt(ncParse(ncText:Get(), floor(ncSpeed:Get() or 400)), t, 1)
+function Config.save() return file_write(CFG_FILE, Config.serialize()) end
+
+function Config.load()
+    local newCfg, kdef, gdef, opts, lmodel, persist, assigns = Config.parse(file_read(CFG_FILE))
+    if not newCfg then return false end
+    Config.applyTable(newCfg, kdef, gdef, opts, lmodel, persist, assigns)
+    return true
+end
+
+local function commit()
+    state.applied = {}
+    Config.save()
+end
+
+local C = {}
+C.items     = ITEMS
+C.names     = itemNames
+C.defToItem = DEF_TO_ITEM
+C.offsets   = off
+
+function C.skinList(def) return skin_list_for(def) end
+function C.isKnife(def)  return is_knife(def) end
+function C.activeDef()   return g_activeDef end
+function C.knifeDef()    return state.knifeDef end
+function C.getCfg(def)   return state.cfg[def] end
+
+function C.apply(item, paint, wear, seed, stat, statval)
+    if not item then return "nothing selected" end
+    if item.kind == "glove" and item.def == 0 then
+        state.cfg[0]     = nil
+        state.gloveDef   = nil
+        state.resetGlove = true
+        commit()
+        return "gloves: default"
+    end
+    state.cfg[item.def] = { paint = paint, wear = wear, seed = seed, stat = stat, statval = statval, kind = item.kind }
+    if     item.kind == "knife" then state.knifeDef = item.def
+    elseif item.kind == "glove" then state.gloveDef = item.def end
+    commit()
+    return string.format("applied: %s (paint %d)", item.name, paint)
+end
+
+function C.remove(item)
+    if not item then return "nothing selected" end
+    state.cfg[item.def] = nil
+    if item.kind == "knife" then
+        if state.knifeDef == item.def then state.knifeDef = nil end
+        state.resetKnife = true
+    elseif item.kind == "glove" then
+        if state.gloveDef == item.def then state.gloveDef = nil end
+        state.resetGlove = true
     else
-        s = ncText:Get()
+        state.pendingReset[item.def] = true
     end
-    s = s or ""
-    if ncMode and ncMode:Get() == 2 then
-        local rn = NC.origName()
-        if rn and rn ~= "" then s = (s == "") and rn or (s .. " " .. rn) end
-    end
-    return s
+    commit()
+    return "removed: " .. item.name
 end
 
-local function ncApply(val, raw)
-    if not val or val == "" then return end
-    pcall(NC.fixFlags)
-    NC.setName(val)
-    if raw then
-        pcall(function() client.Command("setinfo name x", true) end)
+function C.resetAll()
+    for def, c in pairs(state.cfg) do
+        if c.kind == "weapon" then state.pendingReset[def] = true end
+    end
+    state.cfg        = {}
+    state.knifeDef   = nil
+    state.gloveDef   = nil
+    state.resetKnife = true
+    state.resetGlove = true
+    commit()
+    return "reset all"
+end
+
+function C.clearConfig()
+    C.resetAll()
+    pcall(function() file.Delete(CFG_FILE) end)
+    return "config cleared"
+end
+
+function C.loadConfig() return Config.load() end
+function C.getOpt(k)     return state.opts[k] end
+function C.setOpt(k, v)  state.opts[k] = v; Config.save() end
+
+function C.modelList()     return scan_models() end
+function C.refreshModels() return rescan_models() end
+function C.getModelScanAlt() return g_modelScanAlt end
+function C.setModelScanAlt(on)
+    g_modelScanAlt = not not on
+    state.opts.model_scan_alt = g_modelScanAlt
+    Config.save()
+end
+function C.getModelFilter() return g_modelFilter or "" end
+function C.setModelFilter(q)
+    g_modelFilter = tostring(q or "")
+    state.opts.model_filter = g_modelFilter
+    Config.save()
+end
+function C.getLocalModel() return state.localModel end
+function C.setLocalModel(path)
+    if path == nil or path == "" then
+        state.localModel = nil
+        state.modelAssignments["local"] = nil
     else
-        pcall(function() client.Command('setinfo name "' .. val:gsub('"', '') .. '"', true) end)
+        state.localModel = path
+        state.modelAssignments["local"] = path
     end
+    state.appliedLocalModel = nil
+    state.modelApplied["local"] = nil
+    Config.save()
+    return state.localModel
 end
 
-local ntab = M:Tab("Misc")
-ntab:Row()
-local rgSec = ntab:Section("Matchmaking region")
-rgOn    = rgSec:Checkbox("Enabled", false)
-rgCmb   = rgSec:MultiCombo("Allowed regions", RG.names, {})
-rgCmbWd = rgSec.ws[#rgSec.ws]
-rgPen   = rgSec:Slider("Ping penalty", 200, 50, 250, 1, "%.0f")
-rgMin   = rgSec:Checkbox("Minimize selected ping", true)
-rgSec:Button("Refresh regions", function()
-    if not RG.enumerate then return end
-    local selIds = {}
-    local sel = rgCmb:Get()
-    for i, id in ipairs(RG.ids) do if sel[i] then selIds[id] = true end end
-    RG.enumerate()
-    local nv = {}
-    for i, id in ipairs(RG.ids) do if selIds[id] then nv[i] = true end end
-    rgCmbWd.options = RG.names
-    rgCmbWd.value   = nv
+function C.getModelPersist() return state.modelPersist end
+function C.setModelPersist(on)
+    state.modelPersist = not not on
+    state.opts.model_persist = state.modelPersist
+    -- force re-check next tick
+    state.modelApplied = {}
+    state.appliedLocalModel = nil
+    Config.save()
+end
+
+function C.listPlayers()
+    return collect_alive_players()
+end
+
+function C.applyModelTarget(mode, selected_key, path)
+    state.modelTargetMode = mode or 1
+    return assign_models_to_target(mode or 1, selected_key, path)
+end
+
+function C.clearModelTarget(mode, selected_key)
+    return clear_model_assignments(mode or 1, selected_key)
+end
+
+function C.clearAllModels()
+    clear_all_model_assignments()
+end
+
+callbacks.Register("CreateMove", function()
+    local okd, d = pcall(active_weapon_def); g_activeDef = okd and d or nil
+    local ok, err = pcall(run)
+    if not ok then print("[changer] error: " .. tostring(err)) end
 end)
 
-ntab:Col()
-local ncSec = ntab:Section("Name changer")
-ncOn     = ncSec:Checkbox("Enabled", false)
-ncMode   = ncSec:Combo("Mode", { "Full name", "Clantag" }, 1)
-ncSrc    = ncSec:Combo("Source", { "Static", "Mahanmoi", "Aimware", "Custom" }, 1)
-ncStyle  = ncSec:Combo("Style", { "Typing", "Glitch" }, 1)
-ncText   = ncSec:Input("Text / frames", "", "name  /  a:80,ai:80,aim:200")
-ncSpeed  = ncSec:Slider("Frame ms", 400, 100, 1000, 10, "%.0f")
-ncSec:Button("Apply once", function() ncApply(ncValue(ncClock()), false) end)
+resolve()
+pcall(resolve_model_fns)
+local n = 0; for _ in pairs(SKINS) do n = n + 1 end
+print(string.format("[changer] ready: %d weapons, set_model=%s", n, fn.set_model and "ok" or "NIL"))
+local ok_root, root_str = pcall(models_root)
+print(string.format("[changer] precache: fn=%s irs=%s cbuf=%s root=%s",
+    fnptr.precache and "ok" or "NIL", g_IRS and "ok" or "NIL",
+    fnptr.cbuf_insert and "ok" or "NIL", tostring(ok_root and root_str or "ERR")))
 
-ntab:Col()
-local vrSec = ntab:Section("Vote revealer")
-vrOn   = vrSec:Checkbox("Enabled", false)
-vrMode = vrSec:Combo("Mode", { "Chat", "Notification", "Both" }, 3)
-vrSec:Button("Test", function() VR.test() end)
-
-VR._on   = function() return vrOn:Get() end
-VR._mode = function() return vrMode:Get() end
-
-
-local lastWm
-local function wmSync()
-    local sel = wmElems:Get()
-    local parts = {}
-    for i, k in ipairs(WM_PARTS) do parts[k] = sel[i] and true or false end
-    local nick, ping = HS.localInfo()
-    M:WatermarkSet({
-        enabled = wmOn:Get(),
-        parts   = parts,
-        user    = cheat.GetUserName(),
-        nick    = nick,
-        ping    = ping,
-        pos     = WM_POS[wmPos:Get()],
-    })
-
-    local key = table.concat({ wmOn:Get() and 1 or 0, parts.cheat and 1 or 0, parts.lua and 1 or 0,
-                               parts.user and 1 or 0, parts.nick and 1 or 0, parts.fps and 1 or 0,
-                               parts.ping and 1 or 0, wmPos:Get() }, ":")
-    if key ~= lastWm then
-        lastWm = key
-        C.setOpt("wm_on", wmOn:Get())
-        for _, k in ipairs(WM_PARTS) do C.setOpt("wm_" .. k, parts[k]) end
-        C.setOpt("wm_pos", wmPos:Get())
-    end
-end
-
-local lastRg
-local function rgSync()
-    if not RG.ok then return end
-    RG.enabled  = rgOn:Get()
-    RG.add      = floor(rgPen:Get() + 0.5)
-    RG.minimize = rgMin:Get()
-    local sel  = rgCmb:Get()
-    local allow, picks = {}, {}
-    for i, id in ipairs(RG.ids) do
-        if sel[i] then allow[id] = true; picks[#picks + 1] = id end
-    end
-    RG.allow = allow
-    local key = (RG.enabled and "1" or "0") .. ":" .. RG.add .. ":" .. (RG.minimize and "1" or "0") .. ":" .. table.concat(picks, ",")
-    if key ~= lastRg then
-        lastRg = key
-        C.setOpt("rg_on", RG.enabled)
-        C.setOpt("rg_pen", RG.add)
-        C.setOpt("rg_min", RG.minimize)
-        C.setOpt("rg_sel", table.concat(picks, ","))
-    end
-end
-
-local lastNcOn, lastNcCfg, ncTrig, lastSent, lastInGame = nil, nil, 0, nil, false
-local function ncSync()
-    if not NC.ok then return end
-    local on = ncOn:Get()
-    NC.enabled = on
-
-    local cfg = table.concat({ on and 1 or 0, ncMode:Get(), ncSrc:Get(), ncText:Get(),
-                               floor(ncSpeed:Get() + 0.5) }, "|")
-    if cfg ~= lastNcCfg then
-        lastNcCfg = cfg
-        C.setOpt("nc_on", on);          C.setOpt("nc_mode", ncMode:Get())
-        C.setOpt("nc_src", ncSrc:Get()); C.setOpt("nc_text", ncText:Get())
-        C.setOpt("nc_speed", floor(ncSpeed:Get() + 0.5))
-    end
-
-    if on ~= lastNcOn then
-        lastNcOn = on
-        ncTrig, lastSent = 0, nil
-        if on then
-            local nick = select(1, HS.localInfo())
-            if nick and nick ~= "" then NC._captured = nick end
-            NC.steamName()
-            NC._restore = nil
-        else
-            NC.setName(nil)
-            local rn = NC.origName()
-            NC._restore  = (rn and rn ~= "") and rn or nil
-            NC._restoreN = 0
-        end
-    end
-
-    local inGame = HS.localInfo() and true or false
-    if inGame and not lastInGame then NC._flags = nil; ncTrig, lastSent = 0, nil end
-    lastInGame = inGame
-
-    if NC._restore then
-        if not inGame then return end
-        local t = ncClock()
-        if (t - ncTrig) >= 0.25 then
-            ncTrig = t
-            pcall(NC.fixFlags)
-            local rn = NC._restore
-            pcall(function() client.Command('setinfo name "' .. rn:gsub('"', '') .. '"', true) end)
-            NC._restoreN = (NC._restoreN or 0) + 1
-            if NC._restoreN >= 3 then NC._restore = nil end
-        end
-        return
-    end
-
-    if not on or not inGame then return end
-    local t   = ncClock()
-    local val = ncValue(t)
-    if val == "" then return end
-    if val ~= lastSent and (t - ncTrig) >= 0.2 then
-        ncTrig, lastSent = t, val
-        ncApply(val, true)
-    end
-end
-
-local lastHlX, lastHlY, lastHlT
-local function hlSync()
-    M:HitlogSet({
-        enabled = hlOn:Get(),
-        colors  = { miss = cMiss:Get(), hit = cHit:Get(), hurt = cHurt:Get(), kill = cKill:Get() },
-    })
-
-    local x, y = M:HitlogPos()
-    if x ~= lastHlX or y ~= lastHlY then
-        lastHlX, lastHlY = x, y
-        C.setOpt("hl_x", x); C.setOpt("hl_y", y)
-    end
-
-    local t = table.concat({ hlOn:Get() and 1 or 0, hlHit:Get() and 1 or 0, hlKill:Get() and 1 or 0,
-                             hlHurt:Get() and 1 or 0, hlMiss:Get() and 1 or 0 }, ":")
-    if t ~= lastHlT then
-        lastHlT = t
-        C.setOpt("hl_on", hlOn:Get());   C.setOpt("hl_hit", hlHit:Get())
-        C.setOpt("hl_kill", hlKill:Get()); C.setOpt("hl_hurt", hlHurt:Get())
-        C.setOpt("hl_miss", hlMiss:Get())
-    end
-end
-
-local lastVr
-local function vrSync()
-    pcall(VR.flush)
-    if not vrOn then return end
-    local key = (vrOn:Get() and "1" or "0") .. ":" .. vrMode:Get()
-    if key ~= lastVr then
-        lastVr = key
-        C.setOpt("vr_on", vrOn:Get()); C.setOpt("vr_mode", vrMode:Get())
-    end
-end
-
-if C.loadConfig() then lastSel = -2 end
-cbAuto:Set(C.getOpt("autoFollow") and true or false)
-lastAuto = cbAuto:Get()
-
-do
-    cbModelAlt:Set(C.getModelScanAlt())
-    inpModelSearch:Set(C.getModelFilter() or "")
-    lastModelAlt = cbModelAlt:Get()
-    if C.getModelPersist then cbModelPersist:Set(C.getModelPersist()) end
-    lastPersist = cbModelPersist:Get()
-    pcall(reloadModelList)
-    -- do NOT refresh players at inject time (entity list may be unsafe)
-end
-
-do
-    local s = {}
-    local hx = tonumber(C.getOpt("hl_x")); if hx then s.x_off = hx end
-    local hy = tonumber(C.getOpt("hl_y")); if hy then s.y_off = hy end
-    if next(s) then M:HitlogSet(s) end
-end
-
-cbVm:Set(C.getOpt("vm_on") and true or false)
-vmX:Set(tonumber(C.getOpt("vm_x")) or 0)
-vmY:Set(tonumber(C.getOpt("vm_y")) or 0)
-vmZ:Set(tonumber(C.getOpt("vm_z")) or 0)
-
-do
-    local cur = C.getLocalModel()
-    if cur and modelPaths then
-        for i = 2, #modelPaths do
-            if modelPaths[i] == cur then modelLb:Set(i); break end
-        end
-    end
-    lastModelSel = modelLb:Get()
-end
-
-local function getBool(k, d)
-    local v = C.getOpt(k); if v == nil then return d end
-    return v and true or false
-end
-hlOn:Set(getBool("hl_on", true))
-hlHit:Set(getBool("hl_hit", true))
-hlKill:Set(getBool("hl_kill", true))
-hlHurt:Set(getBool("hl_hurt", true))
-hlMiss:Set(getBool("hl_miss", false))
-hsOn:Set(getBool("hs_on2", true))
-ksOn:Set(getBool("ks_on2", false))
-local function setCmb(cmb, k)
-    local i = tonumber(C.getOpt(k))
-    if i and i >= 1 and i <= #SND_NAMES then cmb:Set(i) end
-end
-setCmb(hsCmb, "hs_snd2")
-setCmb(ksCmb, "ks_snd2")
-hsVol:Set(tonumber(C.getOpt("hs_vol2")) or 100)
-ksVol:Set(tonumber(C.getOpt("ks_vol2")) or 100)
-
-wmOn:Set(getBool("wm_on", true))
-do
-    local cur = wmElems:Get()
-    local sel = {}
-    for i, k in ipairs(WM_PARTS) do
-        local v = C.getOpt("wm_" .. k)
-        if v == nil then sel[i] = cur[i] and true or nil
-        else sel[i] = v and true or nil end
-    end
-    wmElems:Set(sel)
-end
-do local p = tonumber(C.getOpt("wm_pos")); if p and p >= 1 and p <= #WM_POS then wmPos:Set(p) end end
-
-rgOn:Set(getBool("rg_on", false))
-rgMin:Set(getBool("rg_min", false))
-do local p = tonumber(C.getOpt("rg_pen")); if p and p >= 50 and p <= 250 then rgPen:Set(p) end end
-do
-    local s = C.getOpt("rg_sel")
-    if type(s) == "string" and s ~= "" then
-        local want = {}
-        for id in s:gmatch("%-?%d+") do want[tonumber(id)] = true end
-        local sel = {}
-        for i, id in ipairs(RG.ids) do if want[id] then sel[i] = true end end
-        rgCmb:Set(sel)
-    end
-end
-
-ncOn:Set(getBool("nc_on", false))
-do local p = tonumber(C.getOpt("nc_mode"));  if p and p >= 1 and p <= 2 then ncMode:Set(p) end end
-do local p = tonumber(C.getOpt("nc_src"));   if p and p >= 1 and p <= 4 then ncSrc:Set(p) end end
-do local p = tonumber(C.getOpt("nc_speed")); if p and p >= 100 and p <= 1000 then ncSpeed:Set(p) end end
-do local s = C.getOpt("nc_text"); if type(s) == "string" then ncText:Set(s) end end
-
-vrOn:Set(getBool("vr_on", false))
-do local p = tonumber(C.getOpt("vr_mode")); if p and p >= 1 and p <= 3 then vrMode:Set(p) end end
-
-M:OnFrame(function()
-    pcall(autoFollow)
-    pcall(syncSkins)
-    pcall(autoApply)
-    pcall(persistOpts)
-    pcall(syncModel)
-    pcall(syncModelSearch)
-    pcall(syncModelPersist)
-    pcall(syncPlayerList)
-    pcall(syncVm)
-    pcall(HS.missTick)
-    pcall(HS.sync)
-    pcall(hlSync)
-    pcall(wmSync)
-    pcall(rgSync)
-    pcall(ncSync)
-    pcall(vrSync)
-end)
-
-M:Build({ w = 780, h = 620, autoH = true, resize = true })
+return C
