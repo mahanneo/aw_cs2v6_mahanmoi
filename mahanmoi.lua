@@ -1,4 +1,4 @@
-local BASE        = rawget(_G, "FEMBOY_BASE") or "https://raw.githubusercontent.com/mahanneo/aw_cs2v6_mahanmoi/main/"
+local BASE        = rawget(_G, "FEMBOY_BASE") or "https://raw.githubusercontent.com/cachorropacoca/aw_cs2v6_mahanmoi/main/"
 local GUILIB_URL  = BASE .. "mahanmoi_guilib.lua"
 local CHANGER_URL = BASE .. "mahanmoi_changer.lua"
 
