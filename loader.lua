@@ -1,5 +1,5 @@
 # Local-only reference loader. Prefer Multscript.lua (GitHub fetch).
-local USER    = "mahanneo"
+local USER    = "cachorropacoca"
 local REPO    = "aw_cs2v6_mahanmoi"
 local VERSION = "latest"
 
@@ -36,7 +36,7 @@ if not src then print("[loader] FATAL: cannot fetch mahanmoi.lua") return end
 local chunk, err = loadstring(src, "=mahanmoi.lua")
 if not chunk then print("[loader] compile error: " .. tostring(err)) return end
 
-_G.FEMBOY_BASE = BASE
+_G.MAHANMOI_BASE = BASE
 print(string.format("[loader] mahanmoi %s from %s", ref(), tostring(where)))
 
 local ok, e = pcall(chunk)
