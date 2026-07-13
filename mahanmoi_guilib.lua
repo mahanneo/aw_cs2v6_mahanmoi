@@ -17,7 +17,7 @@ local T = {
     widget    = { 33, 33, 42, 255 },
     widgethi  = { 45, 45, 57, 255 },
 
-    title     = "FEMBOYTAP",
+    title     = "MAHANMOITAP",
     title_tld = ".CC",
     titlebar  = 44,
     pad       = 14,
@@ -1073,7 +1073,7 @@ M._watermark = {
     enabled    = false,
     parts      = { cheat = false, lua = true, user = false, nick = true, fps = true, ping = true },
     cheat_name = "AIMWARE.NET",
-    lua_name   = "FEMBOYTAP.CC",
+    lua_name   = "MAHANMOITAP.CC",
     user       = nil,
     nick       = nil,
     ping       = nil,
@@ -1446,7 +1446,7 @@ function M:_drawWatermark()
 
     local segs = {}
     if wm.parts.cheat then segs[#segs + 1] = nameSeg(wm.cheat_name or "AIMWARE.NET") end
-    if wm.parts.lua   then segs[#segs + 1] = nameSeg(wm.lua_name or "FEMBOYTAP.CC") end
+    if wm.parts.lua   then segs[#segs + 1] = nameSeg(wm.lua_name or "MAHANMOITAP.CC") end
     if wm.parts.user  then segs[#segs + 1] = { { tostring(wm.user or "?"), T.text, FONT } } end
     if wm.parts.nick  then segs[#segs + 1] = { { tostring(wm.nick or "?"), T.text, FONT } } end
     if wm.parts.fps   then segs[#segs + 1] = { { floor(wm._fps + 0.5) .. " fps", T.text, FONT } } end
