@@ -355,9 +355,9 @@ local function write_fallback(wpn, paint, wear, seed, stat, statval)
     w_i32(wpn + off.m_nFallbackStatTrak, stat and (statval or 0) or -1)
 end
 
--- [تغییر حیاتی برای حل مشکل لود نشدن اسکین اسلحه‌ها در CS2]
+-- [اصلاح شد] مقدار صحیح برای CS2 (باید 0xFFFFFFFF باشد)
 local function mark_item_custom(item)
-    w_u32(item + off.m_iItemIDHigh, 0) -- مقدار 0 جایگزین 0xFFFFFFFF شد
+    w_u32(item + off.m_iItemIDHigh, 0xFFFFFFFF)
     w_u8 (item + off.m_bInitialized, 1)
     w_u8 (item + off.m_bDisallowSOC, 0)
     w_u8 (item + off.m_bRestoreCustomMat, 1)
@@ -400,10 +400,12 @@ local function process_knife(wpn, def_target, paint, wear, seed, stat, statval)
     vcall_void(wpn, 195)
 end
 
+-- [اصلاح شد] اضافه شدن vcall_void برای رفرش مدل اسلحه
 local function process_weapon(wpn, paint, wear, seed, stat, statval)
     mark_item_custom(item_ptr(wpn))
     write_fallback(wpn, paint, wear, seed, stat, statval)
     refresh_econ(wpn)
+    vcall_void(wpn, 195) -- این خط باعث آپدیت بلافاصله مدل اسلحه می‌شود
 end
 
 local function restore_weapon(wpn)
@@ -1072,7 +1074,7 @@ function Config.parse(str)
             local v = tonumber(line:match("^G%s+(%-?%d+)")); if v and v ~= 0 then gdef = v end
         elseif t == "E" then
             local d, p, w, s, st, kind, sv =
-                line:match("^E%s+(%-?%d+)%s+(%-?%d+)%s+([%d%.eE%+%-]+)%s+(%-?%d+)%s+(%d)%s+(%a+)%s*(%d*)")
+                line:match("^E%s+(%-?%d+)%s+(%-?%d+)%s+([%d%.eE\+\-]+)%s+(%-?%d+)%s+(%d)%s+(%a+)%s*(%d*)")
             d, p, w, s = tonumber(d), tonumber(p), tonumber(w), tonumber(s)
             if d then
                 newCfg[d] = { paint = p or 0, wear = w or 0.0001, seed = s or 0,
