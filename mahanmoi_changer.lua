@@ -355,9 +355,11 @@ local function write_fallback(wpn, paint, wear, seed, stat, statval)
     w_i32(wpn + off.m_nFallbackStatTrak, stat and (statval or 0) or -1)
 end
 
--- [اصلاح شد] مقدار صحیح برای CS2 (باید 0xFFFFFFFF باشد)
+-- [اصلاح شد] تنظیم صحیح مقادیر برای رفع مشکل اعمال نشدن اسکین روی اکثر اسلحه‌ها و چاقوها
 local function mark_item_custom(item)
     w_u32(item + off.m_iItemIDHigh, 0xFFFFFFFF)
+    w_u32(item + off.m_iItemIDLow, 0xFFFFFFFF)
+    w_u32(item + off.m_iAccountID, 0)
     w_u8 (item + off.m_bInitialized, 1)
     w_u8 (item + off.m_bDisallowSOC, 0)
     w_u8 (item + off.m_bRestoreCustomMat, 1)
