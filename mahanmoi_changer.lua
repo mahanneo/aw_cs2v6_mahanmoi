@@ -356,10 +356,11 @@ local function write_fallback(wpn, paint, wear, seed, stat, statval)
 end
 
 -- [اصلاح شد] تنظیم صحیح مقادیر برای رفع مشکل اعمال نشدن اسکین روی اکثر اسلحه‌ها و چاقوها
-local function mark_item_custom(item)
+local function mark_item_custom(item, acc)
     w_u32(item + off.m_iItemIDHigh, 0xFFFFFFFF)
     w_u32(item + off.m_iItemIDLow, 0xFFFFFFFF)
-    w_u32(item + off.m_iAccountID, 0)
+    w_u32(item + off.m_iAccountID, acc or 0)
+    w_u32(item + off.m_OriginalOwnerXuidLow, acc or 0)
     w_u8 (item + off.m_bInitialized, 1)
     w_u8 (item + off.m_bDisallowSOC, 0)
     w_u8 (item + off.m_bRestoreCustomMat, 1)
@@ -394,16 +395,16 @@ local function set_knife_subclass(wpn, def_target, quality)
     return item
 end
 
-local function process_knife(wpn, def_target, paint, wear, seed, stat, statval)
+local function process_knife(wpn, def_target, paint, wear, seed, stat, statval, acc)
     local item = set_knife_subclass(wpn, def_target, 3)
-    mark_item_custom(item)
+    mark_item_custom(item, acc)
     write_fallback(wpn, paint, wear, seed, stat, statval)
     refresh_econ(wpn)
     vcall_void(wpn, 195)
 end
 
-local function process_weapon(wpn, paint, wear, seed, stat, statval)
-    mark_item_custom(item_ptr(wpn))
+local function process_weapon(wpn, paint, wear, seed, stat, statval, acc)
+    mark_item_custom(item_ptr(wpn), acc)
     write_fallback(wpn, paint, wear, seed, stat, statval)
     refresh_econ(wpn)
     vcall_void(wpn, 195) -- رفرش مدل برای آپدیت بلافاصله
@@ -963,6 +964,7 @@ local function run()
     local kdef = state.knifeDef
     local kc   = kdef and state.cfg[kdef]
 
+    local acc = local_account_id(base) -- گرفتن آیدی اکانت
     local did = false
     for i = 0, count - 1 do
         local wpn = handle_to_entity(elist, r_u32(arr + i*4))
@@ -976,7 +978,7 @@ local function run()
                         elseif kdef and kc then
                             local s = "k|"..kdef.."|"..kc.paint.."|"..kc.wear.."|"..kc.seed.."|"..tostring(kc.stat).."|"..tostring(kc.statval or 0)
                             if applied[wpn] ~= s then
-                                process_knife(wpn, kdef, kc.paint, kc.wear, kc.seed, kc.stat, kc.statval); applied[wpn]=s; did=true
+                                process_knife(wpn, kdef, kc.paint, kc.wear, kc.seed, kc.stat, kc.statval, acc); applied[wpn]=s; did=true
                             end
                         end
                     else
@@ -988,7 +990,7 @@ local function run()
                                 if c.paint > 0 then
                                     local s = "w|"..c.paint.."|"..c.wear.."|"..c.seed.."|"..tostring(c.stat).."|"..tostring(c.statval or 0)
                                     if applied[wpn] ~= s then
-                                        process_weapon(wpn, c.paint, c.wear, c.seed, c.stat, c.statval); applied[wpn]=s; did=true
+                                        process_weapon(wpn, c.paint, c.wear, c.seed, c.stat, c.statval, acc); applied[wpn]=s; did=true
                                     end
                                 else
                                     local s = "w|none"
