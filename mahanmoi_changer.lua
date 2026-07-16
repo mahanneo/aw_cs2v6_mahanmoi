@@ -379,7 +379,7 @@ local function write_fallback(wpn, paint, wear, seed, stat, statval)
 end
 
 local function mark_item_custom(item)
-    w_u32(item + off.m_iItemIDHigh, 0xFFFFFFFF)
+    w_u32(item + off.m_iItemIDHigh, 0)
     w_u8 (item + off.m_bInitialized, 1)
     w_u8 (item + off.m_bDisallowSOC, 0)
     w_u8 (item + off.m_bRestoreCustomMat, 1)
