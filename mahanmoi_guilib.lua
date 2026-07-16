@@ -17,8 +17,8 @@ local T = {
     widget    = { 33, 33, 42, 255 },
     widgethi  = { 45, 45, 57, 255 },
 
-    title     = "MAHANMOITAP",
-    title_tld = ".CC",
+    title     = "mahanmoi",
+    title_tld = ".vip",
     titlebar  = 44,
     pad       = 14,
     sec_gap   = 12,
