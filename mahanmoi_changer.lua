@@ -1075,7 +1075,7 @@ function Config.parse(str)
             local v = tonumber(line:match("^G%s+(%-?%d+)")); if v and v ~= 0 then gdef = v end
         elseif t == "E" then
             local d, p, w, s, st, kind, sv =
-                line:match("^E%s+(%-?%d+)%s+(%-?%d+)%s+([%d%.eE\+\-]+)%s+(%-?%d+)%s+(%d)%s+(%a+)%s*(%d*)")
+                line:match("^E%s+(%-?%d+)%s+(%-?%d+)%s+([%d%.eE+-]+)%s+(%-?%d+)%s+(%d)%s+(%a+)%s*(%d*)")
             d, p, w, s = tonumber(d), tonumber(p), tonumber(w), tonumber(s)
             if d then
                 newCfg[d] = { paint = p or 0, wear = w or 0.0001, seed = s or 0,
