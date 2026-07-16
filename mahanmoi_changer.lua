@@ -355,7 +355,7 @@ local function write_fallback(wpn, paint, wear, seed, stat, statval)
     w_i32(wpn + off.m_nFallbackStatTrak, stat and (statval or 0) or -1)
 end
 
--- [اصلاح شد] مقدار صحیح برای CS2 (باید 0xFFFFFFFF باشد)
+-- [اصلاح شد] تنظیم صحیح مقادیر برای رفع مشکل اعمال نشدن اسکین روی اکثر اسلحه‌ها و چاقوها
 local function mark_item_custom(item)
     w_u32(item + off.m_iItemIDHigh, 0xFFFFFFFF)
     w_u32(item + off.m_iItemIDLow, 0xFFFFFFFF)
@@ -402,12 +402,11 @@ local function process_knife(wpn, def_target, paint, wear, seed, stat, statval)
     vcall_void(wpn, 195)
 end
 
--- [اصلاح شد] اضافه شدن vcall_void برای رفرش مدل اسلحه
 local function process_weapon(wpn, paint, wear, seed, stat, statval)
     mark_item_custom(item_ptr(wpn))
     write_fallback(wpn, paint, wear, seed, stat, statval)
     refresh_econ(wpn)
-    vcall_void(wpn, 195) -- این خط باعث آپدیت بلافاصله مدل اسلحه می‌شود
+    vcall_void(wpn, 195) -- رفرش مدل برای آپدیت بلافاصله
 end
 
 local function restore_weapon(wpn)
