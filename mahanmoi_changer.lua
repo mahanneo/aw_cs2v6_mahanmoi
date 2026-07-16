@@ -39,11 +39,9 @@ local FIELDS = {
     m_nFallbackStatTrak    = { "m_nFallbackStatTrak", "C_EconEntity" },
     m_EconGloves           = { "m_EconGloves", "C_CSPlayerPawn" },
     m_bNeedToReApplyGloves = { "m_bNeedToReApplyGloves", "C_CSPlayerPawn" },
-
 }
 local function pull_offset(j, name, after)
     local init = 1
-
     if after then local p = j:find('"' .. after .. '"%s*:%s*{'); if p then init = p end end
     local v = j:match('"' .. name .. '"%s*:%s*(%d+)', init)
     return v and tonumber(v) or nil
@@ -95,14 +93,12 @@ local function sig_disp(mod, pattern)
     local a = mem.FindPattern(mod, pattern); if not a or a == 0 then return nil end
     return r_i32(tonumber(a) + 3)
 end
--- cs2-dumper 2026-07-10 fallbacks (updated after CS2 patch)
 local FALLBACK_ENTITYLIST = 0x254EE60
 local FALLBACK_LOCALCTRL  = 0x237EBA0
 
 do
     local cb = mem.GetModuleBase("client.dll")
     local eb = mem.GetModuleBase("engine2.dll")
-
     local ENTLIST_PATS = {
         "48 8B 0D ?? ?? ?? ?? 48 89 7C 24 ?? 8B FA C1 EB",
         "48 89 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? CC",
@@ -111,26 +107,11 @@ do
         off.dwEntityList = sig_rva(cb, "client.dll", pat, 7)
         if off.dwEntityList then break end
     end
-    if not off.dwEntityList then
-        off.dwEntityList = FALLBACK_ENTITYLIST
-        print(string.format("[changer] entlist pattern miss, using fallback RVA 0x%X", FALLBACK_ENTITYLIST))
-    end
-
+    if not off.dwEntityList then off.dwEntityList = FALLBACK_ENTITYLIST end
     off.dwLocalPlayerController = sig_rva(cb, "client.dll", "48 8B 05 ?? ?? ?? ?? 41 89 BE", 7)
-    if not off.dwLocalPlayerController then
-        off.dwLocalPlayerController = FALLBACK_LOCALCTRL
-        print(string.format("[changer] localctrl pattern miss, using fallback RVA 0x%X", FALLBACK_LOCALCTRL))
-    end
-
+    if not off.dwLocalPlayerController then off.dwLocalPlayerController = FALLBACK_LOCALCTRL end
     off.dwNetworkGameClient     = sig_rva(eb, "engine2.dll", "48 89 3D ?? ?? ?? ?? FF 87", 7)
     off.dwNetworkGameClient_signOnState = sig_disp("engine2.dll", "44 8B 81 ?? ?? ?? ?? 48 8D 0D")
-    if not off.dwLocalPlayerController or not off.dwEntityList or not off.m_hMyWeapons then
-        print("[changer] WARNING: signatures/netvars not resolved -- changer inactive")
-    else
-        print(string.format("[changer] sigs ok: entlist=%X ctrl=%X ngc=%s",
-            off.dwEntityList, off.dwLocalPlayerController,
-            off.dwNetworkGameClient and string.format("%X", off.dwNetworkGameClient) or "nil"))
-    end
 end
 
 local function tou32(x) x = x % 0x100000000; if x < 0 then x = x + 0x100000000 end; return x end
@@ -161,14 +142,12 @@ end
 local function subclass_hash(def) return murmur2(tostring(def):lower(), 0x31415926) end
 
 local DLL = "client.dll"
--- client.dll 
 local sig = {
-    set_model      = "40 53 48 83 EC ?? 48 8B D9 4C 8B C2 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 40",  -- CBaseModelEntity::SetModel
-    update_subclass= "4C 8B DC 53 48 81 EC ?? ?? ?? ?? 48 8B 41",                                 -- CEconItemView subclass refresh
-    set_mesh_mask  = "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8D 99 ?? ?? ?? ?? 48 8B 71", -- CSkeletonInstance mesh mask
-    regen_skins    = "48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 10",            -- regenerate custom skins
+    set_model      = "40 53 48 83 EC ?? 48 8B D9 4C 8B C2 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 40",
+    update_subclass= "4C 8B DC 53 48 81 EC ?? ?? ?? ?? 48 8B 41",
+    set_mesh_mask  = "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8D 99 ?? ?? ?? ?? 48 8B 71",
+    regen_skins    = "48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 10",
 }
--- a + 5 + rel32 -> CBodyComponent::SetBodyGroup
 local SBG_SIG = "E8 ?? ?? ?? ?? EB 0C 48 8B CF"
 local fn, fnptr = {}, {}
 local function resolve()
@@ -353,15 +332,13 @@ local state = {
     resetGlove   = false,
     localModel       = nil,
     appliedLocalModel= nil,
-    -- multiplayer model changer
-    modelAssignments = {}, -- key -> path
-    modelApplied     = {}, -- key -> last path we set
+    modelAssignments = {},
+    modelApplied     = {},
     modelPersist     = true,
-    modelTargetMode  = 1,  -- 1 self, 2 teammates, 3 enemies, 4 selected
+    modelTargetMode  = 1,
 }
 
 local Config = {}
-
 local g_activeDef = nil
 
 local function item_ptr(wpn) return wpn + off.m_AttributeManager + off.m_Item end
@@ -378,8 +355,9 @@ local function write_fallback(wpn, paint, wear, seed, stat, statval)
     w_i32(wpn + off.m_nFallbackStatTrak, stat and (statval or 0) or -1)
 end
 
+-- [تغییر حیاتی برای حل مشکل لود نشدن اسکین اسلحه‌ها در CS2]
 local function mark_item_custom(item)
-    w_u32(item + off.m_iItemIDHigh, 0)
+    w_u32(item + off.m_iItemIDHigh, 0) -- مقدار 0 جایگزین 0xFFFFFFFF شد
     w_u8 (item + off.m_bInitialized, 1)
     w_u8 (item + off.m_bDisallowSOC, 0)
     w_u8 (item + off.m_bRestoreCustomMat, 1)
@@ -442,7 +420,6 @@ local function restore_knife(wpn, pawn)
 end
 
 local ATTR_STRUCT = 72
-
 local game_alloc, game_free
 local function resolve_mem()
     if game_alloc then return true end
@@ -554,7 +531,6 @@ local function handle_to_entity(elist, hnd)
 end
 
 local function pawn_alive(pawn)
-
     local ls = r_u8 (pawn + off.m_lifeState)
     local hp = r_i32(pawn + off.m_iHealth)
     return ls == 0 and hp > 0 and hp < 100000
@@ -562,7 +538,6 @@ end
 
 local function in_game()
     local cl, so = off.dwNetworkGameClient, off.dwNetworkGameClient_signOnState
-    -- missing offsets: do NOT assume in-game (avoids SetModel on bad ptrs in menu)
     if not cl or not so then return false end
     local eng = mem.GetModuleBase("engine2.dll"); if not eng then return false end
     local client = r_ptr(eng + cl); if not valid(client) then return false end
@@ -613,7 +588,6 @@ local function models_root()
     local buf = ffi.new("char[?]", 1024)
     local n = ffi.C.GetCurrentDirectoryA(1024, buf)
     local cwd = ffi.string(buf, n)
-
     local root, count = cwd:gsub("[\\/]bin[\\/]win64.*$", "\\csgo")
     if count == 0 then return nil end
     return root
@@ -621,7 +595,6 @@ end
 
 local SCAN_DIRS = { "characters", "agents", "models" }
 local SKIP_DIRS_ALT = { exg = true, materials = true }
-
 local g_modelScanAlt = false
 local g_modelFilter  = ""
 
@@ -650,7 +623,6 @@ local function scan_into(dir, names, paths, opts)
                         if filt and filt ~= "" then
                             local fl = filt:lower()
                             if not stem:lower():find(fl, 1, true) and not rel:lower():find(fl, 1, true) then
-                                -- skip non-matching name
                             else
                                 names[#names + 1] = stem
                                 paths[#paths + 1] = rel
@@ -803,14 +775,12 @@ local function collect_alive_players()
     local out = {}
     local ok_f, pawns = pcall(entities.FindByClass, "C_CSPlayerPawn")
     if not ok_f or not pawns then return out end
-
     local ok_lp, lp = pcall(entities.GetLocalPlayer)
     if not ok_lp or not lp then
         ok_lp, lp = pcall(entities.GetLocalPawn)
     end
     local lp_idx = -1
     if ok_lp and lp then pcall(function() lp_idx = lp:GetIndex() end) end
-
     for _, pawn in pairs(pawns) do
         local alive, idx, team = false, 0, 0
         pcall(function() alive = pawn:IsAlive() end)
@@ -821,7 +791,7 @@ local function collect_alive_players()
                 local is_local = (idx == lp_idx)
                 out[#out + 1] = {
                     pawn = pawn,
-                    raw = nil, -- resolve lazily only when applying in-game
+                    raw = nil,
                     idx = idx,
                     team = team or 0,
                     is_local = is_local,
@@ -955,29 +925,23 @@ local function clear_all_model_assignments()
 end
 
 local function run()
-
     local lp = get_live_local()
     if not lp or not in_game() then
         if next(state.applied) then state.applied = {} end
         return
     end
-
     local base = mem.GetModuleBase(DLL); if not base then return end
     local ctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(ctrl) then return end
     local myHandle = r_u32(ctrl + off.m_hPlayerPawn)
     if myHandle == 0 or myHandle == 0xFFFFFFFF then return end
-
     local elist = r_ptr(base + off.dwEntityList); if not valid(elist) then return end
     local pawn = handle_to_entity(elist, myHandle); if not valid(pawn) then return end
     if not valid(r_ptr(pawn + off.m_pGameSceneNode)) then return end
-
     if not pawn_alive(pawn) then
         if next(state.applied) then state.applied = {} end
         return
     end
-
     local applied = state.applied
-
     apply_all_model_assignments()
     apply_local_model(pawn, lp)
 
@@ -1000,7 +964,6 @@ local function run()
     for i = 0, count - 1 do
         local wpn = handle_to_entity(elist, r_u32(arr + i*4))
         if wpn then
-
             if r_u32(wpn + off.m_hOwnerEntity) == myHandle then
                 do
                     local def = r_u16(item_ptr(wpn) + off.m_iItemDefinitionIndex)
@@ -1272,7 +1235,6 @@ function C.getModelPersist() return state.modelPersist end
 function C.setModelPersist(on)
     state.modelPersist = not not on
     state.opts.model_persist = state.modelPersist
-    -- force re-check next tick
     state.modelApplied = {}
     state.appliedLocalModel = nil
     Config.save()
