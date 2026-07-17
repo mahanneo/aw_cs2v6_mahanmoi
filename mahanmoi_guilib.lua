@@ -18,7 +18,7 @@ local T = {
     widget    = { 30, 22, 48, 235 },
     widgethi  = { 52, 35, 82, 240 },
 
-    title     = "mahanmoi // dashboard",
+    title     = "mahanmoi",
     title_tld = ".vip",
     titlebar  = 44,
     pad       = 14,
