@@ -998,7 +998,7 @@ pcall(function()
     for _, e in ipairs({ "player_hurt", "weapon_fire", "vote_started", "vote_begin", "vote_cast" }) do
         pcall(function() client.AllowListener(e) end)
     end
-    callbacks.Register("FireGameEvent", "Mahanmoi_Events", function(ev)
+    callbacks.Register("FireGameEvent", "FemboyTap_Events", function(ev)
         pcall(HS.onEvent, ev)
         pcall(VR.onEvent, ev)
     end)
