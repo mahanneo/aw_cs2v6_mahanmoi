@@ -1016,7 +1016,7 @@ skinWd = sSec.ws[#sSec.ws]
 
 tab:Col()
 local setSec = tab:Section("Settings")
-sWear  = setSec:Slider("Wizar / Float", 0.0001, 0.0, 1.0, 0.001, "%.3f")
+sWear  = setSec:Slider("Wear / Float", 0.0001, 0.0, 1.0, 0.001, "%.3f")
 sSeed  = setSec:Slider("Seed", 0, 0, 1000, 1)
 cbAuto = setSec:Checkbox("Auto select weapon", false)
 
@@ -1066,6 +1066,7 @@ local function syncModelSearch()
     reloadModelList()
 end
 
+-- Apply stays in the SAME right column under Scan (second Row was pushed off-screen by List fill)
 local vAsec = submodels:Section("Apply")
 local TARGET_OPTS = { "Myself", "Teammates", "Enemies", "Selected player" }
 local cmbModelTarget = vAsec:Combo("Apply target", TARGET_OPTS, 1)
@@ -1226,6 +1227,145 @@ wmElems = wmSec:MultiCombo("Elements",
     { "Cheat name", "Lua name", "Username", "Nickname", "fps", "ping" }, { 2, 4, 5, 6 })
 wmPos   = wmSec:Combo("Position", { "Top left", "Top right", "Bottom left", "Bottom right" }, 2)
 
+local ncClock = (function()
+    for _, fn in ipairs({ function() return globals.RealTime() end,
+                          function() return globals.CurTime() end,
+                          function() return os.clock() end }) do
+        local ok, v = pcall(fn)
+        if ok and type(v) == "number" then return fn end
+    end
+    return function() return 0 end
+end)()
+
+local NC_LEET = {
+    a = { "@", "4" }, b = { "6", "8" }, c = { "<" },
+    e = { "3" },      f = { "ph" },     g = { "9", "6" }, h = { "#" },
+    i = { "1", "!" },     l = { "1" },
+    m = { "|\\/|" },  n = { "|\\|" },   o = { "0" },
+    r = { "|2" },     s = { "$" }, t = { "7" },
+    v = { "\\/" },    z = { "2" },
+}
+
+local function ncGlitch(target)
+    local function corrupt()
+        local chars = {}
+        for i = 1, #target do
+            local c = target:sub(i, i)
+            local alt = NC_LEET[c:lower()]
+            if i > 1 and i < #target and alt and math.random() < 0.4 then
+                c = alt[math.random(#alt)]
+            end
+            chars[i] = c
+        end
+        return table.concat(chars)
+    end
+    local seq = {}
+    local function burst(n)
+        for _ = 1, n do seq[#seq + 1] = { t = corrupt(), ms = 55 } end
+    end
+    burst(6)
+    seq[#seq + 1] = { t = target, ms = 2000 }
+    burst(6)
+    seq[#seq + 1] = { t = target, ms = 2000 }
+    return seq
+end
+
+local NC_FEM = {
+    { t = "",          ms = 550 },
+    { t = "$F",         ms = 55 },  { t = "$f",         ms = 85 },
+    { t = "$f3",        ms = 55 },  { t = "$fe",        ms = 85 },
+    { t = "$fe|\\/|",   ms = 55 },  { t = "$fem",       ms = 85 },
+    { t = "$fem6",      ms = 55 },  { t = "$femb",      ms = 85 },
+    { t = "$femb0",     ms = 55 },  { t = "$fembo",     ms = 85 },
+    { t = "$femboY",    ms = 55 },  { t = "$femboy",    ms = 85 },
+    { t = "$femboyT",   ms = 55 },  { t = "$femboyt",   ms = 85 },
+    { t = "$femboyt@",  ms = 55 },  { t = "$femboyta",  ms = 85 },
+    { t = "$femboytaP", ms = 55 },  { t = "$mahanmoi", ms = 90 },
+    { t = "$mahanmoi",  ms = 70 }, { t = "$mahanmoi$", ms = 2000 },
+    { t = "$mahanmoi",  ms = 70 }, { t = "$mahanmoi",   ms = 70 },
+    { t = "$femboyta",  ms = 60 },  { t = "$femboyt",   ms = 60 },
+    { t = "$femboy",    ms = 60 },  { t = "$fembo",     ms = 60 },
+    { t = "$femb",      ms = 60 },  { t = "$fem",       ms = 60 },
+    { t = "$fe",        ms = 60 },  { t = "$f",         ms = 60 },
+}
+
+local NC_AIM = {
+    { t = "",            ms = 450 },
+    { t = "[A]",           ms = 120 },  { t = "[AI]",          ms = 120 },
+    { t = "[AIM]",         ms = 120 },  { t = "[AIMW]",        ms = 120 },
+    { t = "[AIMWA]",       ms = 120 },  { t = "[AIMWAR]",      ms = 120 },
+    { t = "[AIMWARE]",     ms = 110 }, { t = "[AIMWARE.]",    ms = 120 },
+    { t = "[AIMWARE.N]",   ms = 90 },  { t = "[AIMWARE.NE]",  ms = 120 },
+    { t = "[AIMWARE.NET]", ms = 2000 },
+    { t = "[AIMWARE.NE]",  ms = 120 },  { t = "[AIMWARE.N]",   ms = 120 },
+    { t = "[AIMWARE.]",    ms = 120 },  { t = "[AIMWARE]",     ms = 120 },
+    { t = "[AIMWAR]",      ms = 120 },  { t = "[AIMWA]",       ms = 120 },
+    { t = "[AIMW]",        ms = 120 },  { t = "[AIM]",         ms = 120 },
+    { t = "[AI]",          ms = 120 },  { t = "[A]",           ms = 120 },
+}
+
+local NC_FEM_G = ncGlitch("$mahanmoi$")
+local NC_AIM_G = ncGlitch("[AIMWARE.NET]")
+
+local function ncParse(str, defMs)
+    local frames = {}
+    for tok in (str .. ","):gmatch("([^,]*),") do
+        if tok ~= "" then
+            local t, ms = tok:match("^(.-):(%d+)$")
+            if t then frames[#frames + 1] = { t = t, ms = tonumber(ms) }
+            else      frames[#frames + 1] = { t = tok, ms = defMs } end
+        end
+    end
+    return frames
+end
+
+local function ncFrameAt(seq, t, factor)
+    factor = factor or 1
+    local n = #seq; if n == 0 then return "" end
+    local total = 0
+    for i = 1, n do total = total + seq[i].ms * factor end
+    if total <= 0 then return seq[1].t end
+    local ms  = (t * 1000) % total
+    local acc = 0
+    for i = 1, n do
+        acc = acc + seq[i].ms * factor
+        if ms < acc then return seq[i].t end
+    end
+    return seq[n].t
+end
+
+local function ncValue(t)
+    local src = ncSrc and ncSrc:Get() or 1
+    local glitch = ncStyle and ncStyle:Get() == 2
+    local s
+    if src == 2 then
+        s = ncFrameAt(glitch and NC_FEM_G or NC_FEM, t, (ncSpeed:Get() or 400) / 400)
+    elseif src == 3 then
+        s = ncFrameAt(glitch and NC_AIM_G or NC_AIM, t, (ncSpeed:Get() or 400) / 400)
+    elseif src == 4 then
+        s = ncFrameAt(ncParse(ncText:Get(), floor(ncSpeed:Get() or 400)), t, 1)
+    else
+        s = ncText:Get()
+    end
+    s = s or ""
+    if ncMode and ncMode:Get() == 2 then
+        local rn = NC.origName()
+        if rn and rn ~= "" then s = (s == "") and rn or (s .. " " .. rn) end
+    end
+    return s
+end
+
+local function ncApply(val, raw)
+    if not val or val == "" then return end
+    pcall(NC.fixFlags)
+    NC.setName(val)
+    if raw then
+        pcall(function() client.Command("setinfo name x", true) end)
+    else
+        pcall(function() client.Command('setinfo name "' .. val:gsub('"', '') .. '"', true) end)
+    end
+end
+
 local ntab = M:Tab("Misc")
 ntab:Row()
 local rgSec = ntab:Section("Matchmaking region")
@@ -1247,7 +1387,16 @@ rgSec:Button("Refresh regions", function()
 end)
 
 ntab:Col()
--- بخش قدیمی Name Changer کاملاً حذف شد و با کد جدید جایگزین شد
+local ncSec = ntab:Section("Name changer")
+ncOn     = ncSec:Checkbox("Enabled", false)
+ncMode   = ncSec:Combo("Mode", { "Full name", "Clantag" }, 1)
+ncSrc    = ncSec:Combo("Source", { "Static", "Mahanmoi", "Aimware", "Custom" }, 1)
+ncStyle  = ncSec:Combo("Style", { "Typing", "Glitch" }, 1)
+ncText   = ncSec:Input("Text / frames", "", "name  /  a:80,ai:80,aim:200")
+ncSpeed  = ncSec:Slider("Frame ms", 400, 100, 1000, 10, "%.0f")
+ncSec:Button("Apply once", function() ncApply(ncValue(ncClock()), false) end)
+
+ntab:Col()
 local vrSec = ntab:Section("Vote revealer")
 vrOn   = vrSec:Checkbox("Enabled", false)
 vrMode = vrSec:Combo("Mode", { "Chat", "Notification", "Both" }, 3)
@@ -1255,6 +1404,7 @@ vrSec:Button("Test", function() VR.test() end)
 
 VR._on   = function() return vrOn:Get() end
 VR._mode = function() return vrMode:Get() end
+
 
 local lastWm
 local function wmSync()
@@ -1270,6 +1420,7 @@ local function wmSync()
         ping    = ping,
         pos     = WM_POS[wmPos:Get()],
     })
+
     local key = table.concat({ wmOn:Get() and 1 or 0, parts.cheat and 1 or 0, parts.lua and 1 or 0,
                                parts.user and 1 or 0, parts.nick and 1 or 0, parts.fps and 1 or 0,
                                parts.ping and 1 or 0, wmPos:Get() }, ":")
@@ -1303,23 +1454,84 @@ local function rgSync()
     end
 end
 
+local lastNcOn, lastNcCfg, ncTrig, lastSent, lastInGame = nil, nil, 0, nil, false
+local function ncSync()
+    if not NC.ok then return end
+    local on = ncOn:Get()
+    NC.enabled = on
+
+    local cfg = table.concat({ on and 1 or 0, ncMode:Get(), ncSrc:Get(), ncText:Get(),
+                               floor(ncSpeed:Get() + 0.5) }, "|")
+    if cfg ~= lastNcCfg then
+        lastNcCfg = cfg
+        C.setOpt("nc_on", on);          C.setOpt("nc_mode", ncMode:Get())
+        C.setOpt("nc_src", ncSrc:Get()); C.setOpt("nc_text", ncText:Get())
+        C.setOpt("nc_speed", floor(ncSpeed:Get() + 0.5))
+    end
+
+    if on ~= lastNcOn then
+        lastNcOn = on
+        ncTrig, lastSent = 0, nil
+        if on then
+            local nick = select(1, HS.localInfo())
+            if nick and nick ~= "" then NC._captured = nick end
+            NC.steamName()
+            NC._restore = nil
+        else
+            NC.setName(nil)
+            local rn = NC.origName()
+            NC._restore  = (rn and rn ~= "") and rn or nil
+            NC._restoreN = 0
+        end
+    end
+
+    local inGame = HS.localInfo() and true or false
+    if inGame and not lastInGame then NC._flags = nil; ncTrig, lastSent = 0, nil end
+    lastInGame = inGame
+
+    if NC._restore then
+        if not inGame then return end
+        local t = ncClock()
+        if (t - ncTrig) >= 0.25 then
+            ncTrig = t
+            pcall(NC.fixFlags)
+            local rn = NC._restore
+            pcall(function() client.Command('setinfo name "' .. rn:gsub('"', '') .. '"', true) end)
+            NC._restoreN = (NC._restoreN or 0) + 1
+            if NC._restoreN >= 3 then NC._restore = nil end
+        end
+        return
+    end
+
+    if not on or not inGame then return end
+    local t   = ncClock()
+    local val = ncValue(t)
+    if val == "" then return end
+    if val ~= lastSent and (t - ncTrig) >= 0.2 then
+        ncTrig, lastSent = t, val
+        ncApply(val, true)
+    end
+end
+
 local lastHlX, lastHlY, lastHlT
 local function hlSync()
     M:HitlogSet({
         enabled = hlOn:Get(),
         colors  = { miss = cMiss:Get(), hit = cHit:Get(), hurt = cHurt:Get(), kill = cKill:Get() },
     })
+
     local x, y = M:HitlogPos()
     if x ~= lastHlX or y ~= lastHlY then
         lastHlX, lastHlY = x, y
         C.setOpt("hl_x", x); C.setOpt("hl_y", y)
     end
+
     local t = table.concat({ hlOn:Get() and 1 or 0, hlHit:Get() and 1 or 0, hlKill:Get() and 1 or 0,
                              hlHurt:Get() and 1 or 0, hlMiss:Get() and 1 or 0 }, ":")
     if t ~= lastHlT then
         lastHlT = t
         C.setOpt("hl_on", hlOn:Get());   C.setOpt("hl_hit", hlHit:Get())
-        C.setOpt("hl_kill", hlKill:Get()); C.setOpt("hurt", hlHurt:Get())
+        C.setOpt("hl_kill", hlKill:Get()); C.setOpt("hl_hurt", hlHurt:Get())
         C.setOpt("hl_miss", hlMiss:Get())
     end
 end
@@ -1346,6 +1558,7 @@ do
     if C.getModelPersist then cbModelPersist:Set(C.getModelPersist()) end
     lastPersist = cbModelPersist:Get()
     pcall(reloadModelList)
+    -- do NOT refresh players at inject time (entity list may be unsafe)
 end
 
 do
@@ -1377,7 +1590,7 @@ end
 hlOn:Set(getBool("hl_on", true))
 hlHit:Set(getBool("hl_hit", true))
 hlKill:Set(getBool("hl_kill", true))
-hlHurt:Set(getBool("hurt", true))
+hlHurt:Set(getBool("hl_hurt", true))
 hlMiss:Set(getBool("hl_miss", false))
 hsOn:Set(getBool("hs_on2", true))
 ksOn:Set(getBool("ks_on2", false))
@@ -1417,6 +1630,12 @@ do
     end
 end
 
+ncOn:Set(getBool("nc_on", false))
+do local p = tonumber(C.getOpt("nc_mode"));  if p and p >= 1 and p <= 2 then ncMode:Set(p) end end
+do local p = tonumber(C.getOpt("nc_src"));   if p and p >= 1 and p <= 4 then ncSrc:Set(p) end end
+do local p = tonumber(C.getOpt("nc_speed")); if p and p >= 100 and p <= 1000 then ncSpeed:Set(p) end end
+do local s = C.getOpt("nc_text"); if type(s) == "string" then ncText:Set(s) end end
+
 vrOn:Set(getBool("vr_on", false))
 do local p = tonumber(C.getOpt("vr_mode")); if p and p >= 1 and p <= 3 then vrMode:Set(p) end end
 
@@ -1435,110 +1654,8 @@ M:OnFrame(function()
     pcall(hlSync)
     pcall(wmSync)
     pcall(rgSync)
+    pcall(ncSync)
     pcall(vrSync)
 end)
 
 M:Build({ w = 780, h = 620, autoH = true, resize = true })
-
----------------------------------------------------------
--- MAHANMOI Name Changer (Advanced Engine Based)
----------------------------------------------------------
-ffi.cdef[[
-    void* GetModuleHandleA(const char* lpModuleName);
-]]
-local NULL = 0x0
-local ENGINE2_DLL_NAME = "engine2.dll"
-local cVTable_Address_VEngineCvar007_offset = NULL
-local cResolveConVar_offset = NULL
-local cVTable_FindConVar_offset = 0xB
-local cConVarFlags = 0x30
-local FCVAR_DEVELOPMENTONLY = 0x2
-local FCVAR_USERINFO = 0x200
-local function getOffsetFromPattern(cDllName, cPattern, cPatternOffset, cInstrSize)
-    local cPatternLocation = mem.FindPattern(cDllName, cPattern)
-    local cRelativeAddress = ffi.cast("int32_t*", cPatternLocation + cPatternOffset)[0x0]
-    return tonumber(cPatternLocation + cRelativeAddress + cInstrSize) - tonumber(ffi.cast("uintptr_t", ffi.C.GetModuleHandleA(cDllName)))
-end
-cVTable_Address_VEngineCvar007_offset = getOffsetFromPattern(ENGINE2_DLL_NAME, "48 8B 0D ?? ?? ?? ?? ?? 48 8B 16 48 89 7C 24 ?? 4C 89 4C 24 ??", 3, 7)
-cResolveConVar_offset = getOffsetFromPattern(ENGINE2_DLL_NAME, "48 8B D3 E8 ?? ?? ?? ?? 48 8B 44 24", 4, 8)
-local function patchConVar(cConVarName)
-    local engine2_base_address = tonumber(ffi.cast("uintptr_t", ffi.C.GetModuleHandleA(ENGINE2_DLL_NAME)))
-    if engine2_base_address == nil or engine2_base_address == NULL then return end
-    local vTable_engine_address = tonumber(ffi.cast("uintptr_t*", engine2_base_address + cVTable_Address_VEngineCvar007_offset)[0x0])
-    local vTable_engine_table = tonumber(ffi.cast("uintptr_t*", vTable_engine_address)[0x0])
-    local pFindConVarFunction_address = ffi.cast("uintptr_t*", vTable_engine_table)[cVTable_FindConVar_offset]
-    local pFindConVarFunction = ffi.cast("void* (*)(void*, void*, const char*, int)", pFindConVarFunction_address)
-    local pFindConVarOutput = ffi.new("void*[1]")
-    local pFindConVarName = ffi.new("char[?]", cConVarName:len() + 0x1, cConVarName)
-    local pFindConVarHandle_address = pFindConVarFunction(ffi.cast("void*", vTable_engine_address), pFindConVarOutput, pFindConVarName, 0x0)
-    local pFindConVarHandle = ffi.cast("void*", pFindConVarHandle_address)
-    local pResolveConVarFunction = ffi.cast("void* (*)(int64_t*, int32_t, int16_t)", tonumber(ffi.cast("uintptr_t", engine2_base_address + cResolveConVar_offset)))
-    local pResolveConVarOutput = ffi.new("int64_t[0x2]")
-    local pResolveConVarResult = pResolveConVarFunction(pResolveConVarOutput, ffi.cast("int32_t", pFindConVarOutput[0x0]), 0x0)
-    local pCurrentConVarStruct_address = tonumber(pResolveConVarOutput[0x1])
-    local pCurrentConVarFlags = ffi.cast("uintptr_t*", pCurrentConVarStruct_address + cConVarFlags)
-    pCurrentConVarFlags[0x0] = bit.band(pCurrentConVarFlags[0x0], bit.bnot(FCVAR_DEVELOPMENTONLY))
-    pCurrentConVarFlags[0x0] = bit.bor(pCurrentConVarFlags[0x0], FCVAR_USERINFO)
-end
--------------------/\-------------------
-local Aimware_Misc_Features_ref = gui.Reference("Miscellaneous", "Features")
-local NameChanger_Combobox_ref = gui.Combobox(Aimware_Misc_Features_ref, "mahanmoi_nc_listbox", "Mahanmoi Name-Changer", "Disabled", "Fake name", "Animated", "Static", "Static | Radar", "Minecraft enchantment | Radar", "Radar Exploit")
-local NameChanger_Clantag_Editbox_ref = gui.Editbox(Aimware_Misc_Features_ref, "mahanmoi_nc_clantag", "")
-local NameChanger_Clantag_Speed_Slider_ref = gui.Slider(Aimware_Misc_Features_ref, "mahanmoi_nc_speed", "Animation speed", 0.3, 0, 1, 0.1)
--------------------\/-------------------
-local function GetMagicSymbols(iCount) local magicSymbols = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" local result = "" for i = 1, iCount do local magicIndex = math.random(1, magicSymbols:len()) result = result .. magicSymbols:sub(magicIndex, magicIndex) end return result end
-local cOldRealName = " "
-local function SaveRealPlayerName(cRealPlayerName) cOldRealName = cRealPlayerName end
-local function GetRealPlayerName() return cOldRealName end
-local function SetUserNameAndClantag(cClantagWithName) client.Command('name ' .. '"' .. cClantagWithName .. '"', true) client.Command('setinfo name ' .. '"' .. cClantagWithName .. '"', true) end
-local function DisabledClantagHandler() SetUserNameAndClantag(cOldRealName) end
-local function StaticClantagHandler() SetUserNameAndClantag(NameChanger_Clantag_Editbox_ref:GetString() .. " " .. cOldRealName) end
-local function FakeNameHandler() SetUserNameAndClantag(NameChanger_Clantag_Editbox_ref:GetString()) end
-local cAnimatedName = " " local iAnimatedNameCurrentIndex = -1 local bReversed = false local cLastTimeChanged_AnimTag = -1
-local function AnimatedNameHandler() if globals.CurTime() < cLastTimeChanged_AnimTag then cLastTimeChanged_AnimTag = globals.CurTime() end if (globals.CurTime() - cLastTimeChanged_AnimTag) < NameChanger_Clantag_Speed_Slider_ref:GetValue() then return end cLastTimeChanged_AnimTag = globals.CurTime() local ExitBoxStr_len = NameChanger_Clantag_Editbox_ref:GetString():len() if bReversed then iAnimatedNameCurrentIndex = iAnimatedNameCurrentIndex + 1 if iAnimatedNameCurrentIndex > ExitBoxStr_len then bReversed = false; iAnimatedNameCurrentIndex = ExitBoxStr_len end else iAnimatedNameCurrentIndex = iAnimatedNameCurrentIndex - 1 if iAnimatedNameCurrentIndex < 0 then bReversed = true; iAnimatedNameCurrentIndex = 0 end end local cCurrentAnimatedNameTag = cAnimatedName:sub(1, iAnimatedNameCurrentIndex) local cAdditionalSpaces = ("\xC2\xA0\xC2\xA0"):rep(ExitBoxStr_len - iAnimatedNameCurrentIndex) SetUserNameAndClantag(cCurrentAnimatedNameTag .. cAdditionalSpaces .. " " .. cOldRealName) end
-local fakeChanged = false
-local function StaticRadarClantagHandler() if fakeChanged then SetUserNameAndClantag(NameChanger_Clantag_Editbox_ref:GetString() .. " " .. cOldRealName) fakeChanged = false else SetUserNameAndClantag(NameChanger_Clantag_Editbox_ref:GetString() .. " " .. cOldRealName.. "\xC2\xA0") fakeChanged = true end end
-local function MinecraftEnchantmentClantagHandler() SetUserNameAndClantag(GetMagicSymbols(math.random(10, 16))) end
-local function RadarExploitClantagHandler() if fakeChanged then SetUserNameAndClantag(cOldRealName) fakeChanged = false else SetUserNameAndClantag(cOldRealName .. "\xC2\xA0") fakeChanged = true end end
-local cInitTime = globals.CurTime() local bForceExit = false local bNameWasSaved = false local bNameWasChanged = false local cLastTimeChanged_logic = -1
-local function NameChangerLogicHandler() if bForceExit then return end if globals.CurTime() < cLastTimeChanged_logic then cLastTimeChanged_logic = globals.CurTime() end if globals.CurTime() < cInitTime then cInitTime = globals.CurTime() end
-    if engine.GetServerIP() == nil then cInitTime = globals.CurTime(); bNameWasSaved = false; return end
-    if engine.GetMapName() == nil or engine.GetMapName() == "" then cInitTime = globals.CurTime(); bNameWasSaved = false; return end
-    local pLocalPLayerEnt = entities.GetLocalPlayer()
-    if pLocalPLayerEnt == nil then cInitTime = globals.CurTime(); bNameWasSaved = false; return end
-    if (globals.CurTime() - cInitTime) < 1.0 then bNameWasSaved = false; return end
-    
-    if bNameWasSaved == false then
-        if pLocalPLayerEnt:IsPlayer() == false then return end
-        print("[mahanmoi] Name changer activated successfully")
-        SaveRealPlayerName(pLocalPLayerEnt:GetName())
-        bNameWasSaved = true
-        patchConVar("name")
-    end
-    if (globals.CurTime() - cLastTimeChanged_logic) > 0.03 then
-        cLastTimeChanged_logic = globals.CurTime()
-        local ComboboxValue = NameChanger_Combobox_ref:GetValue()
-        if ComboboxValue == 0 and bNameWasChanged == true then DisabledClantagHandler(); bNameWasChanged = false end
-        if ComboboxValue == 1 then FakeNameHandler(); bNameWasChanged = true end
-        if ComboboxValue == 2 then
-            if NameChanger_Clantag_Editbox_ref:GetString() ~= cAnimatedName then cAnimatedName = NameChanger_Clantag_Editbox_ref:GetString() iAnimatedNameCurrentIndex = NameChanger_Clantag_Editbox_ref:GetString():len() bReversed = false end AnimatedNameHandler(); bNameWasChanged = true
-        end
-        if ComboboxValue == 3 then StaticClantagHandler(); bNameWasChanged = true end
-        if ComboboxValue == 4 then StaticRadarClantagHandler(); bNameWasChanged = true end
-        if ComboboxValue == 5 then MinecraftEnchantmentClantagHandler(); bNameWasChanged = true end
-        if ComboboxValue == 6 then RadarExploitClantagHandler(); bNameWasChanged = true end
-    end
-end
-local cLastTimeChanged_menu = -1
-local function NameChangerMenuHandler() if bForceExit then return end if globals.CurTime() < cLastTimeChanged_menu then cLastTimeChanged_menu = globals.CurTime() end if (globals.CurTime() - cLastTimeChanged_menu) > 0.03 then cLastTimeChanged_menu = globals.CurTime() local ComboboxValue = NameChanger_Combobox_ref:GetValue()
-        if ComboboxValue == 0 then NameChanger_Clantag_Editbox_ref:SetInvisible(true); NameChanger_Clantag_Speed_Slider_ref:SetInvisible(true) end
-        if ComboboxValue == 1 then NameChanger_Clantag_Editbox_ref:SetInvisible(false); NameChanger_Clantag_Speed_Slider_ref:SetInvisible(true) end
-        if ComboboxValue == 2 then NameChanger_Clantag_Editbox_ref:SetInvisible(false); NameChanger_Clantag_Speed_Slider_ref:SetInvisible(false) end
-        if ComboboxValue == 3 then NameChanger_Clantag_Editbox_ref:SetInvisible(false); NameChanger_Clantag_Speed_Slider_ref:SetInvisible(true) end
-        if ComboboxValue == 4 then NameChanger_Clantag_Editbox_ref:SetInvisible(false); NameChantag_Speed_Slider_ref:SetInvisible(true) end
-        if ComboboxValue == 5 then NameChanger_Clantag_Editbox_ref:SetInvisible(true); NameChantag_Speed_Slider_ref:SetInvisible(true) end
-        if ComboboxValue == 6 then NameChanger_Clantag_Editbox_ref:SetInvisible(true); NameChantag_Speed_Slider_ref:SetInvisible(true) end
-    end end
-callbacks.Register("Draw", NameChangerLogicHandler)
-callbacks.Register("Draw", NameChangerMenuHandler)
-callbacks.Register("Unload", function() bForceExit = true if bNameWasSaved and NameChanger_Combobox_ref:GetValue() ~= 0 then if entities.GetLocalPlayer() == nil then return end DisabledClantagHandler() end end)
