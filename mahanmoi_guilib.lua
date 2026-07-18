@@ -1,5 +1,5 @@
 local M = {}
-M.VERSION = "1.0"
+M.VERSION = "1.1"
 
 local T = {
     x = 360, y = 200, w = 600, h = 440,
@@ -82,6 +82,10 @@ local function lerpc(a, b, t)
 end
 
 local ffi = ffi
+
+-- ============================================================
+-- FONT DOWNLOAD & INIT
+-- ============================================================
 local FONT_URLS = {
     { file = "mahanmoi_Oxanium.ttf",      url = "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/oxanium/Oxanium%5Bwght%5D.ttf" },
     { file = "mahanmoi_Orbitron.ttf",     url = "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/orbitron/Orbitron%5Bwght%5D.ttf" },
@@ -89,6 +93,7 @@ local FONT_URLS = {
 }
 
 local FONT, FONT_B, FONT_LOGO
+
 local function initFonts()
     local mk = function(list, size, weight)
         for _, name in ipairs(list) do
@@ -117,6 +122,7 @@ local function fontInitCoro()
             long URLDownloadToFileA(void*, const char*, const char*, unsigned long, void*);
         ]]
     end)
+
     local gdi32, urlmon
     pcall(function() gdi32  = ffi.load("gdi32") end)
     pcall(function() urlmon = ffi.load("urlmon") end)
@@ -150,6 +156,9 @@ local function fontInitCoro()
     initFonts()
 end
 
+-- ============================================================
+-- DRAWING PRIMITIVES
+-- ============================================================
 local function setcol(c) draw.Color(c[1], c[2], c[3], rnd((c[4] or 255) * ALPHA)) end
 
 local function rect(x, y, w, h, c)
@@ -181,6 +190,9 @@ local function frame(x, y, w, h, c)
     rect(x, y, 1, h, c); rect(x + w - 1, y, 1, h, c)
 end
 
+-- ============================================================
+-- COLOR CONVERSION
+-- ============================================================
 local function rgb2hsv(r, g, b)
     r, g, b = r / 255, g / 255, b / 255
     local mx, mn = mmax(r, g, b), mmin(r, g, b)
@@ -210,6 +222,9 @@ local function hsv2rgb(h, s, v)
     return rnd(r * 255), rnd(g * 255), rnd(b * 255)
 end
 
+-- ============================================================
+-- TEXT
+-- ============================================================
 local function textw(s) local w = draw.GetTextSize(s); return w or 0 end
 
 local function text(x, y, c, s, font, align)
@@ -219,6 +234,9 @@ local function text(x, y, c, s, font, align)
     setcol(c); draw.Text(rnd(x), rnd(y), s)
 end
 
+-- ============================================================
+-- INPUT RESOLUTION
+-- ============================================================
 local _getMouse
 local function resolveMouse()
     local cands = {
@@ -245,7 +263,10 @@ local function resolveClock()
         if ok and type(v) == "number" then return f end
     end
 end
-local function now() if _clock then local ok, v = pcall(_clock); if ok then return v end end return 0 end
+local function now()
+    if _clock then local ok, v = pcall(_clock); if ok then return v end end
+    return 0
+end
 
 local _getWheel
 local function resolveWheel()
@@ -260,18 +281,31 @@ local function resolveWheel()
         if ok and type(v) == "number" then return f end
     end
 end
-local function readWheel() if _getWheel then local ok, v = pcall(_getWheel); if ok and type(v) == "number" then return v end end return 0 end
+local function readWheel()
+    if _getWheel then local ok, v = pcall(_getWheel); if ok and type(v) == "number" then return v end end
+    return 0
+end
 
-local SHIFT_DIGITS = { [0x30] = ")", [0x31] = "!", [0x32] = "@", [0x33] = "#", [0x34] = "$",
-                       [0x35] = "%", [0x36] = "^", [0x37] = "&", [0x38] = "*", [0x39] = "(" }
-local OEM = {
-    [0xBA] = { ";", ":" }, [0xBB] = { "=", "+" }, [0xBC] = { ",", "<" }, [0xBD] = { "-", "_" },
-    [0xBE] = { ".", ">" }, [0xBF] = { "/", "?" }, [0xC0] = { "`", "~" }, [0xDB] = { "[", "{" },
-    [0xDC] = { "\\", "|" }, [0xDD] = { "]", "}" }, [0xDE] = { "'", '"' },
+-- ============================================================
+-- KEYBOARD INPUT
+-- ============================================================
+local SHIFT_DIGITS = {
+    [0x30] = ")", [0x31] = "!", [0x32] = "@", [0x33] = "#", [0x34] = "$",
+    [0x35] = "%", [0x36] = "^", [0x37] = "&", [0x38] = "*", [0x39] = "("
 }
+local OEM = {
+    [0xBA] = { ";", ":" }, [0xBB] = { "=", "+" }, [0xBC] = { ",", "<" },
+    [0xBD] = { "-", "_" }, [0xBE] = { ".", ">" }, [0xBF] = { "/", "?" },
+    [0xC0] = { "`", "~" }, [0xDB] = { "[", "{" }, [0xDC] = { "\\", "|" },
+    [0xDD] = { "]", "}" }, [0xDE] = { "'", '"' },
+}
+
 local function keyPressed(k) local v = false; pcall(function() v = input.IsButtonPressed(k) end); return v end
 local function keyDown(k)    local v = false; pcall(function() v = input.IsButtonDown(k)  end); return v end
 
+-- ============================================================
+-- CLIPBOARD
+-- ============================================================
 pcall(function() ffi.cdef[[
     int    OpenClipboard(void*);
     int    CloseClipboard(void);
@@ -318,23 +352,34 @@ local function clipSet(s)
     end)
 end
 
+-- ============================================================
+-- KEY REPEAT
+-- ============================================================
 local _kr = {}
 local REPEAT_DELAY, REPEAT_RATE = 0.40, 0.035
+
 local function keyRepeat(k, t)
     if not keyDown(k) then _kr[k] = nil; return false end
     local s = _kr[k]
     if not s then _kr[k] = { first = t, last = t }; return true end
-    if (t - s.first) >= REPEAT_DELAY and (t - s.last) >= REPEAT_RATE then s.last = t; return true end
+    if (t - s.first) >= REPEAT_DELAY and (t - s.last) >= REPEAT_RATE then
+        s.last = t; return true
+    end
     return false
 end
 
+-- ============================================================
+-- TEXT INPUT WIDGET LOGIC
+-- ============================================================
 local function selBounds(wd)
     local c = wd._caret or #wd.value
     local a = wd._anchor or c
     if a > c then a, c = c, a end
     return a, c
 end
+
 local function hasSel(wd) return (wd._anchor or wd._caret or 0) ~= (wd._caret or 0) end
+
 local function delSel(wd)
     local a, b = selBounds(wd)
     if a == b then return false end
@@ -379,7 +424,10 @@ local function pollText(wd, t)
 
     if ctrl then
         if keyPressed(0x41) then wd._anchor = 0; wd._caret = n end
-        if keyPressed(0x43) then local a, b = selBounds(wd); clipSet(a ~= b and wd.value:sub(a + 1, b) or wd.value) end
+        if keyPressed(0x43) then
+            local a, b = selBounds(wd)
+            clipSet(a ~= b and wd.value:sub(a + 1, b) or wd.value)
+        end
         if keyPressed(0x58) then
             local a, b = selBounds(wd)
             if a ~= b then clipSet(wd.value:sub(a + 1, b)); delSel(wd)
@@ -410,11 +458,13 @@ local function pollText(wd, t)
 
     if keyRepeat(0x25, t) then
         local a, b = selBounds(wd)
-        if not shift and a ~= b then wd._caret = a; wd._anchor = a else move(wd._caret - 1) end
+        if not shift and a ~= b then wd._caret = a; wd._anchor = a
+        else move(wd._caret - 1) end
     end
     if keyRepeat(0x27, t) then
         local a, b = selBounds(wd)
-        if not shift and a ~= b then wd._caret = b; wd._anchor = b else move(wd._caret + 1) end
+        if not shift and a ~= b then wd._caret = b; wd._anchor = b
+        else move(wd._caret + 1) end
     end
     if keyPressed(0x24) then move(0) end
     if keyPressed(0x23) then move(#wd.value) end
@@ -422,7 +472,10 @@ local function pollText(wd, t)
     if keyRepeat(0x08, t) then
         if not delSel(wd) then
             local c = wd._caret
-            if c > 0 then wd.value = wd.value:sub(1, c - 1) .. wd.value:sub(c + 1); wd._caret = c - 1; wd._anchor = c - 1 end
+            if c > 0 then
+                wd.value = wd.value:sub(1, c - 1) .. wd.value:sub(c + 1)
+                wd._caret = c - 1; wd._anchor = c - 1
+            end
         end
     end
     if keyRepeat(0x2E, t) then
@@ -434,7 +487,10 @@ local function pollText(wd, t)
 
     if keyRepeat(0x20, t) then ins(" ") end
     for k = 0x41, 0x5A do
-        if keyRepeat(k, t) then local ch = string.char(k); ins(shift and ch or ch:lower()) end
+        if keyRepeat(k, t) then
+            local ch = string.char(k)
+            ins(shift and ch or ch:lower())
+        end
     end
     for k = 0x30, 0x39 do
         if keyRepeat(k, t) then ins(shift and SHIFT_DIGITS[k] or string.char(k)) end
@@ -445,7 +501,11 @@ local function pollText(wd, t)
     if keyPressed(0x0D) or keyPressed(0x1B) then M._focus = nil end
 end
 
+-- ============================================================
+-- MOUSE STATE
+-- ============================================================
 local ms = { x = 0, y = 0, down = false, pressed = false, released = false, consumed = false }
+
 local function updateMouse()
     if _getMouse then
         local ok, x, y = pcall(_getMouse)
@@ -477,6 +537,9 @@ local function handle(w)
     }
 end
 
+-- ============================================================
+-- PUBLIC UI HELPERS
+-- ============================================================
 local UI = {
     T = T, now = now, clamp = clamp, lerp = lerpc,
     rect  = function(x, y, w, h, c) rect(x, y, w, h, c) end,
@@ -488,64 +551,65 @@ local UI = {
     hover = function(x, y, w, h) return hovering(x, y, w, h) end,
     click = function(x, y, w, h) return clicked(x, y, w, h) end,
     mouse = function() return ms.x, ms.y, ms.down end,
-    screen = function() local w, h = 0, 0; pcall(function() w, h = draw.GetScreenSize() end); return w, h end,
+    screen = function()
+        local w, h = 0, 0
+        pcall(function() w, h = draw.GetScreenSize() end)
+        return w, h
+    end,
 }
 
 local IM = {}
 UI._x, UI._cy, UI._w = 0, 0, 200
 UI.layout = function(x, y, w) UI._x = x; UI._cy = y; if w then UI._w = w end end
 
+-- ============================================================
+-- SECTION
+-- ============================================================
 local Section = {}
 Section.__index = Section
 
 function Section.new(title) return setmetatable({ title = title, ws = {} }, Section) end
-
 function Section:_add(w) self.ws[#self.ws + 1] = w; return handle(w) end
 
 function Section:Checkbox(label, def)
     return self:_add({ kind = "check", label = label, value = def and true or false })
 end
-
 function Section:Button(label, cb)
     return self:_add({ kind = "button", label = label, cb = cb })
 end
-
 function Section:Slider(label, def, mn, mx, step, fmt)
     step = step or 1
-    return self:_add({ kind = "slider", label = label, value = def, min = mn, max = mx,
-                       step = step, dec = decimalsOf(step), fmt = fmt })
+    return self:_add({
+        kind = "slider", label = label, value = def, min = mn, max = mx,
+        step = step, dec = decimalsOf(step), fmt = fmt
+    })
 end
-
 function Section:SliderFloat(label, def, mn, mx, fmt, step)
     return self:Slider(label, def, mn, mx, step or 0.01, fmt)
 end
-
 function Section:Combo(label, options, def)
     return self:_add({ kind = "combo", label = label, options = options, value = def or 1 })
 end
-
 function Section:MultiCombo(label, options, defaults)
     local sel = {}
     if defaults then for _, i in ipairs(defaults) do sel[i] = true end end
     return self:_add({ kind = "multicombo", label = label, options = options, value = sel })
 end
-
 function Section:Input(label, def, placeholder)
     return self:_add({ kind = "input", label = label, value = def or "", placeholder = placeholder })
 end
-
 function Section:ColorPicker(label, col)
     col = col or { 255, 255, 255, 255 }
     return self:_add({ kind = "color", label = label, value = { col[1], col[2], col[3], col[4] or 255 } })
 end
-
 function Section:Listbox(label, items, height, def)
     local fill = (height == "fill")
     if fill then self._hasFill = true end
-    return self:_add({ kind = "listbox", label = label, items = items or {}, value = def or 1,
-                       h = fill and 120 or (height or 200), fill = fill, scroll = 0 })
+    return self:_add({
+        kind = "listbox", label = label, items = items or {}, value = def or 1,
+        h = fill and 120 or (height or 200), fill = fill, scroll = 0
+    })
 end
-
 function Section:Custom(height, fn)
     return self:_add({ kind = "custom", h = height or 60, fn = fn })
 end
@@ -557,9 +621,6 @@ function Section:height()
 end
 
 function Section:render(x, y, w)
-    -- Layout height: explicit row stretch (_layoutH), else natural.
-    -- Fill-to-window only when NOT in a measured row (auto-pack / Skins),
-    -- so Row() siblings cannot inflate and push later panels off-screen.
     local natural = self:height()
     local h = natural
     if self._layoutH then
@@ -611,15 +672,16 @@ function Section:render(x, y, w)
         local visible = true
         if clipBottom and iy >= clipBottom then visible = false end
         if clipTop and (iy + wh) <= clipTop then visible = false end
-        if visible then
-            self:_widget(wd, ix, iy, iw)
-        end
+        if visible then self:_widget(wd, ix, iy, iw) end
         iy = iy + wh
         if clipBottom and iy >= clipBottom then break end
     end
     return h
 end
 
+-- ============================================================
+-- WIDGET RENDERING
+-- ============================================================
 function Section:_widget(wd, x, y, w)
     if wd.kind == "check" then
         local box = 15
@@ -639,7 +701,8 @@ function Section:_widget(wd, x, y, w)
         rbox(x, y + 1, w, bh, 5, lerpc(T.widget, T.widgethi, wd._h), T.border)
         text(x + w / 2, y + 6, lerpc(T.text, T.texthi, wd._h), wd.label, FONT, "center")
         if clicked(x, y + 1, w, bh) then
-            local ok, err = pcall(wd.cb); if not ok then print("[mahanmoi] button error: " .. tostring(err)) end
+            local ok, err = pcall(wd.cb)
+            if not ok then print("[mahanmoi] button error: " .. tostring(err)) end
         end
 
     elseif wd.kind == "slider" then
@@ -691,7 +754,9 @@ function Section:_widget(wd, x, y, w)
         text(x, y, lerpc(T.text, T.texthi, wd._h), wd.label, FONT)
         rbox(x, by, w, bh, 5, lerpc(T.widget, T.widgethi, wd._h), open and T.accent or T.border)
         local parts, count = {}, 0
-        for i, o in ipairs(wd.options) do if wd.value[i] then count = count + 1; parts[#parts + 1] = o end end
+        for i, o in ipairs(wd.options) do
+            if wd.value[i] then count = count + 1; parts[#parts + 1] = o end
+        end
         local shown = count == 0 and "None" or (count > 2 and (count .. " selected") or table.concat(parts, ", "))
         text(x + 9, by + 5, open and T.texthi or lerpc(T.text, T.texthi, wd._h), shown, FONT)
         text(x + w - 16, by + 5, open and T.accent or T.textdim, open and "-" or "v", FONT)
@@ -712,10 +777,14 @@ function Section:_widget(wd, x, y, w)
             if focused then
                 local a, b = selBounds(wd)
                 if a ~= b then
-                    local va, vb = clamp(a, off, off + #vis), clamp(b, off, off + #vis)
+                    local va = clamp(a, off, off + #vis)
+                    local vb = clamp(b, off, off + #vis)
                     local sx = textw(wd.value:sub(off + 1, va))
                     local sw = textw(wd.value:sub(off + 1, vb)) - sx
-                    if sw > 0 then rfill(tx + sx - 1, by + 4, mmin(sw + 2, avail), bh - 8, 3, { T.accent[1], T.accent[2], T.accent[3], 110 }) end
+                    if sw > 0 then
+                        rfill(tx + sx - 1, by + 4, mmin(sw + 2, avail), bh - 8, 3,
+                              { T.accent[1], T.accent[2], T.accent[3], 110 })
+                    end
                 end
             end
             text(tx, ty, focused and T.texthi or T.text, vis, FONT)
@@ -731,8 +800,11 @@ function Section:_widget(wd, x, y, w)
             wd._caret, wd._anchor, M._inputDrag = c, c, wd
         end
         if M._inputDrag == wd then
-            if ms.down and M._focus == wd then wd._caret = caretFromX(wd, ms.x - tx, wd._off or 0)
-            else M._inputDrag = nil end
+            if ms.down and M._focus == wd then
+                wd._caret = caretFromX(wd, ms.x - tx, wd._off or 0)
+            else
+                M._inputDrag = nil
+            end
         end
         if focused then pollText(wd, now()) end
 
@@ -742,7 +814,9 @@ function Section:_widget(wd, x, y, w)
         text(x, y + 4, lerpc(T.text, T.texthi, wd._h), wd.label, FONT)
         local sw, shh = 32, 14
         local bx, by = x + w - sw, y + 3
-        rbox(bx, by, sw, shh, 3, { wd.value[1], wd.value[2], wd.value[3], 255 }, (M._cp == wd) and T.accent or T.border)
+        rbox(bx, by, sw, shh, 3,
+             { wd.value[1], wd.value[2], wd.value[3], 255 },
+             (M._cp == wd) and T.accent or T.border)
         if clicked(bx, by, sw, shh) then
             if M._cp == wd then M._cp = nil
             else M._cp = wd; wd._hsv = { rgb2hsv(wd.value[1], wd.value[2], wd.value[3]) } end
@@ -808,46 +882,69 @@ function Section:_widget(wd, x, y, w)
     end
 end
 
+-- ============================================================
+-- IMMEDIATE MODE HELPERS
+-- ============================================================
 local function imWidget(id, factory)
     local wd = IM[id]
     if not wd then wd = factory(); IM[id] = wd end
     return wd
 end
+
 local function imEmit(wd)
     Section._widget(Section, wd, UI._x, UI._cy, UI._w)
     UI._cy = UI._cy + wheight(wd)
 end
 
 function UI.checkbox(id, def)
-    local wd = imWidget(id, function() return { kind = "check", label = id, value = def and true or false } end)
+    local wd = imWidget(id, function()
+        return { kind = "check", label = id, value = def and true or false }
+    end)
     imEmit(wd); return wd.value
 end
+
 function UI.slider(id, def, mn, mx, step, fmt)
-    local wd = imWidget(id, function() local s = step or 1
-        return { kind = "slider", label = id, value = def, min = mn, max = mx, step = s, dec = decimalsOf(s), fmt = fmt } end)
+    local wd = imWidget(id, function()
+        local s = step or 1
+        return { kind = "slider", label = id, value = def, min = mn, max = mx, step = s, dec = decimalsOf(s), fmt = fmt }
+    end)
     wd.min, wd.max = mn, mx
     imEmit(wd); return wd.value
 end
+
 function UI.combo(id, options, def)
-    local wd = imWidget(id, function() return { kind = "combo", label = id, options = options, value = def or 1 } end)
+    local wd = imWidget(id, function()
+        return { kind = "combo", label = id, options = options, value = def or 1 }
+    end)
     wd.options = options
     imEmit(wd); return wd.value
 end
+
 function UI.button(id)
-    local wd = imWidget(id, function() return { kind = "button", label = id } end)
+    local wd = imWidget(id, function()
+        return { kind = "button", label = id }
+    end)
     wd._clicked = false
     wd.cb = function() wd._clicked = true end
     imEmit(wd); return wd._clicked
 end
+
 function UI.colorpicker(id, def)
-    local wd = imWidget(id, function() local c = def or { 255, 255, 255, 255 }
-        return { kind = "color", label = id, value = { c[1], c[2], c[3], c[4] or 255 } } end)
+    local wd = imWidget(id, function()
+        local c = def or { 255, 255, 255, 255 }
+        return { kind = "color", label = id, value = { c[1], c[2], c[3], c[4] or 255 } }
+    end)
     imEmit(wd); return wd.value
 end
+
 function UI.label(s, col)
-    text(UI._x, UI._cy, col or T.text, tostring(s), FONT); UI._cy = UI._cy + 18
+    text(UI._x, UI._cy, col or T.text, tostring(s), FONT)
+    UI._cy = UI._cy + 18
 end
 
+-- ============================================================
+-- LAYOUT: ROWS, COLUMNS, CONTAINERS
+-- ============================================================
 local function renderSectionAt(s, x, y, w)
     local h = 40
     pcall(function() h = s:height() end)
@@ -856,7 +953,7 @@ local function renderSectionAt(s, x, y, w)
     if clipTop and (y + h) <= clipTop then return h end
     local rh = h
     local ok, err = pcall(function() rh = s:render(x, y, w) or h end)
-    if not ok then print("[mahanmoi] section '" .. tostring(s.title) .. "' error: " .. tostring(err)); return h end
+    if not ok then print("[mahanmoi] section error: " .. tostring(err)); return h end
     return rh
 end
 
@@ -864,7 +961,10 @@ local function renderAutoPack(secs, x, y, w, cols)
     cols = cols or 2
     local colW = (w - (cols - 1) * T.pad) / cols
     local colY, colX = {}, {}
-    for c = 1, cols do colY[c] = y; colX[c] = x + (c - 1) * (colW + T.pad) end
+    for c = 1, cols do
+        colY[c] = y
+        colX[c] = x + (c - 1) * (colW + T.pad)
+    end
     for _, s in ipairs(secs) do
         local best = 1
         for c = 2, cols do if colY[c] < colY[best] then best = c end end
@@ -879,21 +979,20 @@ local function renderRows(rows, x, y, w)
         if n > 0 then
             local gap = 8
             local colW = (w - (n - 1) * gap) / n
-            -- Pass 1: natural heights per column
+            -- Pass 1: measure heights
             local colH = {}
             local rowH = 0
             for ci, col in ipairs(row) do
                 local h = 0
                 for _, s in ipairs(col) do
                     s._layoutH = nil
-                    local sh = 40
-                    pcall(function() sh = s:height() end)
+                    local sh = 40; pcall(function() sh = s:height() end)
                     h = h + sh + T.sec_gap
                 end
                 colH[ci] = h
                 if h > rowH then rowH = h end
             end
-            -- Pass 2: stretch fill sections to row height, then render
+            -- Pass 2: stretch fill, render
             for ci, col in ipairs(row) do
                 local cxx = x + (ci - 1) * (colW + gap)
                 local yy = cy
@@ -901,8 +1000,7 @@ local function renderRows(rows, x, y, w)
                 if stretch > 0 then
                     for _, s in ipairs(col) do
                         if s._hasFill then
-                            local sh = 40
-                            pcall(function() sh = s:height() end)
+                            local sh = 40; pcall(function() sh = s:height() end)
                             s._layoutH = sh + stretch
                             break
                         end
@@ -919,13 +1017,19 @@ local function renderRows(rows, x, y, w)
 end
 
 local function renderContainer(cont, x, y, w)
-    if cont._rows and #cont._rows > 0 then renderRows(cont._rows, x, y, w)
-    else renderAutoPack(cont.secs, x, y, w, cont._cols) end
+    if cont._rows and #cont._rows > 0 then
+        renderRows(cont._rows, x, y, w)
+    else
+        renderAutoPack(cont.secs, x, y, w, cont._cols)
+    end
 end
 
 local function measureSecs(secs)
     local total = 0
-    for _, s in ipairs(secs) do local h = 40; pcall(function() h = s:height() end); total = total + h + T.sec_gap end
+    for _, s in ipairs(secs) do
+        local h = 40; pcall(function() h = s:height() end)
+        total = total + h + T.sec_gap
+    end
     return total
 end
 
@@ -934,7 +1038,10 @@ local function containerHeight(cont)
         local total = 0
         for _, row in ipairs(cont._rows) do
             local rowH = 0
-            for _, col in ipairs(row) do local h = measureSecs(col); if h > rowH then rowH = h end end
+            for _, col in ipairs(row) do
+                local h = measureSecs(col)
+                if h > rowH then rowH = h end
+            end
             total = total + rowH
         end
         return total
@@ -970,7 +1077,12 @@ local function addSection(cont, title)
     end
     return s
 end
-local function contRow(cont) cont._rows[#cont._rows + 1] = { {} }; return cont end
+
+local function contRow(cont)
+    cont._rows[#cont._rows + 1] = { {} }
+    return cont
+end
+
 local function contCol(cont)
     if #cont._rows == 0 then cont._rows[#cont._rows + 1] = { {} } end
     local row = cont._rows[#cont._rows]
@@ -978,19 +1090,29 @@ local function contCol(cont)
     return cont
 end
 
+-- ============================================================
+-- SUB TAB
+-- ============================================================
 local Sub = {}
 Sub.__index = Sub
+
 function Sub.new(name) return setmetatable({ name = name, secs = {}, _rows = {} }, Sub) end
 function Sub:Section(title) return addSection(self, title) end
 function Sub:Row() return contRow(self) end
 function Sub:Col() return contCol(self) end
 function Sub:Columns(n) self._cols = n; return self end
 
+-- ============================================================
+-- TAB
+-- ============================================================
 local Tab = {}
 Tab.__index = Tab
 
 function Tab.new(name)
-    return setmetatable({ name = name, secs = {}, subs = {}, _rows = {}, _activeSub = 1, _subT = 1 }, Tab)
+    return setmetatable({
+        name = name, secs = {}, subs = {}, _rows = {},
+        _activeSub = 1, _subT = 1
+    }, Tab)
 end
 
 function Tab:Section(title) return addSection(self, title) end
@@ -1031,7 +1153,9 @@ function Tab:render(x, y, w)
         local hov = hovering(p.x, y, p.w, barH)
         sub._h = approach(sub._h or 0, (active or hov) and 1 or 0, 16)
         text(p.x + p.w / 2, y + 6, lerpc(T.textdim, T.texthi, sub._h), sub.name, FONT, "center")
-        if clicked(p.x, y, p.w, barH) and self._activeSub ~= i then self._activeSub = i; self._subT = 0 end
+        if clicked(p.x, y, p.w, barH) and self._activeSub ~= i then
+            self._activeSub = i; self._subT = 0
+        end
     end
     rect(x, y + barH, w, 1, T.divider)
 
@@ -1041,6 +1165,9 @@ function Tab:render(x, y, w)
     if sub then renderContainer(sub, x + (1 - e) * 16, y + barH + T.sec_gap, w) end
 end
 
+-- ============================================================
+-- MAIN STATE
+-- ============================================================
 M._tabs   = {}
 M._active = 1
 M._win    = { x = T.x, y = T.y, w = T.w, h = T.h }
@@ -1080,11 +1207,11 @@ M._watermark = {
     ping       = nil,
     pos        = "top-right",
     _fps       = 0,
-    _killTry   = -1,
 }
 
-local WM_MISC_KEYS = { "misc.watermark", "misc.watermark.enable", "misc.indicators.watermark" }
-
+-- ============================================================
+-- PUBLIC API: WATERMARK
+-- ============================================================
 function M:Watermark(on) self._watermark.enabled = on and true or false; return self end
 
 function M:WatermarkSet(opts)
@@ -1110,12 +1237,19 @@ function M:Tab(name)
     return t
 end
 
+-- ============================================================
+-- NOTIFICATIONS
+-- ============================================================
 local function smoother(x) x = clamp(x, 0, 1); return x * x * x * (x * (x * 6 - 15) + 10) end
 
 function M:Notify(text, kind)
-    self._toasts[#self._toasts + 1] = { text = tostring(text), kind = kind or "info", born = now(), life = T.notif_life }
+    self._toasts[#self._toasts + 1] = {
+        text = tostring(text), kind = kind or "info",
+        born = now(), life = T.notif_life
+    }
     while #self._toasts > 6 do table.remove(self._toasts, 1) end
 end
+
 function M:Info(t)    self:Notify(t, "info")    end
 function M:Success(t) self:Notify(t, "success") end
 function M:Error(t)   self:Notify(t, "error")   end
@@ -1123,6 +1257,72 @@ function M:Error(t)   self:Notify(t, "error")   end
 function M:SetNotifPos(p) self._notifPos = p end
 function M:GetNotifPos() return self._notifPos end
 
+function M:_drawToasts()
+    local toasts = self._toasts
+    if #toasts == 0 then return end
+
+    local SLIDE_IN, SLIDE_OUT, SLIDE_DIST, GAP = 0.32, 0.45, 24, 8
+    local W, M_OFF = T.notif_w, T.notif_margin
+    local sw, sh = 0, 0
+    pcall(function() sw, sh = draw.GetScreenSize() end)
+    if sw == 0 then return end
+
+    local pos   = self._notifPos
+    local right = pos:find("right") ~= nil
+    local top   = pos:find("top") ~= nil
+    local x0    = right and (sw - M_OFF - W) or M_OFF
+
+    -- Cleanup expired
+    local i = 1
+    while i <= #toasts do
+        if (now() - toasts[i].born) >= toasts[i].life + SLIDE_OUT + 0.05 then
+            table.remove(toasts, i)
+        else
+            i = i + 1
+        end
+    end
+
+    local y = top and M_OFF or (sh - M_OFF)
+    local order = {}
+    if top then
+        for k = 1, #toasts do order[#order + 1] = k end
+    else
+        for k = #toasts, 1, -1 do order[#order + 1] = k end
+    end
+
+    for _, k in ipairs(order) do
+        local tw = toasts[k]
+        local age = now() - tw.born
+        local inE  = smoother(clamp(age / SLIDE_IN, 0, 1))
+        local outE = smoother(clamp((age - tw.life) / SLIDE_OUT, 0, 1))
+        local dx   = (1 - inE) * SLIDE_DIST + outE * SLIDE_DIST
+        local a    = inE * (1 - outE)
+        local h    = 46
+
+        local bx = right and (x0 + dx) or (x0 - dx)
+        local by = top and y or (y - h)
+
+        ALPHA = a
+        local kc = (tw.kind == "success" and T.notif_success)
+                 or (tw.kind == "error" and T.notif_error)
+                 or T.notif_info
+        rbox(bx, by, W, h, 8, T.section, T.border)
+        rfill(bx, by, 3, h, 3, kc, true, false, false, true)
+        text(bx + 14, by + 9, T.texthi, tw.text, FONT)
+
+        local prog = 1 - clamp(age / tw.life, 0, 1)
+        rect(bx + 12, by + h - 9, W - 24, 3, T.widget)
+        if prog > 0 then
+            rfill(bx + 12, by + h - 9, (W - 24) * prog, 3, 1, kc, true, false, false, true)
+        end
+
+        y = top and (y + (h + GAP) * a) or (y - (h + GAP) * a)
+    end
+end
+
+-- ============================================================
+-- HITLOG
+-- ============================================================
 local HITLOG_TEXT = { miss = "missed", hit = "hit", hurt = "hurt", kill = "killed enemy" }
 
 local function hitlogLabel(e)
@@ -1151,13 +1351,18 @@ function M:HitlogSet(opts)
     if opts.font_size        then hl.font_size = opts.font_size end
     if opts.life             then hl.life      = opts.life      end
     if opts.colors then
-        for k, v in pairs(opts.colors) do if v then hl.colors[tostring(k):lower()] = v end end
+        for k, v in pairs(opts.colors) do
+            if v then hl.colors[tostring(k):lower()] = v end
+        end
     end
     return self
 end
 
 function M:HitlogPos() return self._hitlog.x_off or 0, self._hitlog.y_off end
-function M:HitlogResetPos() self._hitlog.x_off, self._hitlog.y_off = 0, nil; return self end
+function M:HitlogResetPos()
+    self._hitlog.x_off, self._hitlog.y_off = 0, nil
+    return self
+end
 
 function M:HitlogColor(kind, col)
     if col then self._hitlog.colors[tostring(kind):lower()] = col end
@@ -1166,65 +1371,16 @@ end
 
 function M:HitlogClear() self._hitlog.queue = {}; return self end
 
-function M:_drawToasts()
-    local toasts = self._toasts
-    if #toasts == 0 then return end
-
-    local SLIDE_IN, SLIDE_OUT, SLIDE_DIST, GAP = 0.32, 0.45, 24, 8
-    local W, M_OFF = T.notif_w, T.notif_margin
-    local sw, sh = 0, 0
-    pcall(function() sw, sh = draw.GetScreenSize() end)
-    if sw == 0 then return end
-
-    local pos   = self._notifPos
-    local right = pos:find("right") ~= nil
-    local top   = pos:find("top") ~= nil
-    local x0    = right and (sw - M_OFF - W) or M_OFF
-
-    local i = 1
-    while i <= #toasts do
-        if (now() - toasts[i].born) >= toasts[i].life + SLIDE_OUT + 0.05 then table.remove(toasts, i)
-        else i = i + 1 end
-    end
-
-    local y = top and M_OFF or (sh - M_OFF)
-
-    local order = {}
-    if top then for k = 1, #toasts do order[#order + 1] = k end
-    else for k = #toasts, 1, -1 do order[#order + 1] = k end end
-
-    for _, k in ipairs(order) do
-        local tw = toasts[k]
-        local age = now() - tw.born
-        local inE  = smoother(clamp(age / SLIDE_IN, 0, 1))
-        local outE = smoother(clamp((age - tw.life) / SLIDE_OUT, 0, 1))
-        local dx   = (1 - inE) * SLIDE_DIST + outE * SLIDE_DIST
-        local a    = inE * (1 - outE)
-        local h    = 46
-
-        local bx = right and (x0 + dx) or (x0 - dx)
-        local by = top and y or (y - h)
-
-        ALPHA = a
-        local kc = (tw.kind == "success" and T.notif_success) or (tw.kind == "error" and T.notif_error) or T.notif_info
-        rbox(bx, by, W, h, 8, T.section, T.border)
-        rfill(bx, by, 3, h, 3, kc, true, false, false, true)
-        text(bx + 14, by + 9, T.texthi, tw.text, FONT)
-
-        local prog = 1 - clamp(age / tw.life, 0, 1)
-        rect(bx + 12, by + h - 9, W - 24, 3, T.widget)
-        if prog > 0 then rfill(bx + 12, by + h - 9, (W - 24) * prog, 3, 1, kc, true, false, false, true) end
-
-        y = top and (y + (h + GAP) * a) or (y - (h + GAP) * a)
-    end
-end
-
+-- ============================================================
+-- HITLOG RENDERING
+-- ============================================================
 local HITLOG_DEMO = {
     { kind = "hit",  label = "hit player in head for 90hp" },
     { kind = "hurt", label = "hurt by player in chest for 20hp" },
     { kind = "miss", label = "missed shot" },
     { kind = "kill", label = "killed player in head for 100hp" },
 }
+
 local HL_SNAP_IN, HL_SNAP_OUT, HL_DEAD = 12, 18, 28
 local HL_BOTTOM = 160
 local function easeOutCubic(t) t = clamp(t, 0, 1); local u = 1 - t; return 1 - u * u * u end
@@ -1235,103 +1391,33 @@ local function hitlogPos(hl, sw, sh)
     return px, py
 end
 
-local function hitlogEdit(hl, sw, sh, cx, cy, rowH, gap, reveal, row)
-    local x, y = hitlogPos(hl, sw, sh)
-    local grab = hl._rect
+local function hitlogDrawEntry(entry, cx, cy, alpha, hl)
+    local label = hitlogLabel(entry)
+    local col = hl.colors[entry.kind] or hl.colors.hit or T.accent
+    ALPHA = alpha
+    text(cx, cy, col, label, FONT, "center")
+    return 22
+end
 
-    local dragging = hl._drag or false
-    local snapX, snapY = hl._snapX or false, hl._snapY or false
-    local pendX, pendY = hl._pendX or 0, hl._pendY or 0
-    local mx, my = ms.x, ms.y
+local function hitlogRenderEntries(entries, cx, startY, hl, sw, sh, t)
+    local cy = startY
+    local n = #entries
+    if n == 0 then return 0 end
 
-    if ms.pressed then
-        if grab and mx >= grab.x and mx <= grab.x + grab.w
-               and my >= grab.y and my <= grab.y + grab.h then
-            dragging = true; ms.consumed = true
-        end
-        snapX = mabs(x - cx) < 0.5
-        snapY = mabs(y - cy) < 0.5
-        pendX, pendY = 0, 0
-        hl._lmx, hl._lmy = mx, my
+    -- Stack upward from startY
+    for i = n, 1, -1 do
+        local e = entries[i]
+        local age = now() - e.born
+        local fadeIn  = clamp(age / hl.fade_in, 0, 1)
+        local fadeOut = clamp((age - (hl.life - hl.fade_out)) / hl.fade_out, 0, 1)
+        local alpha = fadeIn * (1 - fadeOut)
+        if alpha <= 0 then goto skip end
+
+        local h = hitlogDrawEntry(e, cx, cy, alpha, hl)
+        cy = cy - h
+        ::skip::
     end
-    if not ms.down then dragging = false; pendX, pendY = 0, 0 end
-
-    local hw = grab and grab.w / 2 or 90
-    local hh = grab and grab.h / 2 or 50
-    local minX, maxX = HL_DEAD + hw, sw - HL_DEAD - hw
-    local minY, maxY = HL_DEAD + hh, sh - HL_DEAD - hh
-
-    if dragging then
-        ms.consumed = true
-        local dx = mx - (hl._lmx or mx)
-        local dy = my - (hl._lmy or my)
-        if dx ~= 0 then
-            if snapX then
-                pendX = pendX + dx
-                if mabs(pendX) > HL_SNAP_OUT then
-                    x = cx + (pendX >= 0 and 1 or -1) * (mabs(pendX) - HL_SNAP_OUT)
-                    snapX, pendX = false, 0
-                else x = cx end
-            else
-                x = x + dx
-                if mabs(x - cx) < HL_SNAP_IN then x, snapX, pendX = cx, true, 0 end
-            end
-        end
-        if dy ~= 0 then
-            if snapY then
-                pendY = pendY + dy
-                if mabs(pendY) > HL_SNAP_OUT then
-                    y = cy + (pendY >= 0 and 1 or -1) * (mabs(pendY) - HL_SNAP_OUT)
-                    snapY, pendY = false, 0
-                else y = cy end
-            else
-                y = y + dy
-                if mabs(y - cy) < HL_SNAP_IN then y, snapY, pendY = cy, true, 0 end
-            end
-        end
-        if minX <= maxX then x = clamp(x, minX, maxX) end
-        if minY <= maxY then y = clamp(y, minY, maxY) end
-    end
-
-    hl._lmx, hl._lmy = mx, my
-    hl._drag, hl._snapX, hl._snapY, hl._pendX, hl._pendY = dragging, snapX, snapY, pendX, pendY
-
-    if dragging then hl.x_off, hl.y_off = x - cx, y - cy end
-
-    if dragging then
-        ALPHA = 0.55
-        if snapX or mabs(x - cx) < 0.5 then rect(cx, 0, 1, sh, T.accent) end
-        if snapY or mabs(y - cy) < 0.5 then rect(0, cy, sw, 1, T.accent) end
-        ALPHA = 1
-    end
-
-    local n = #HITLOG_DEMO
-    local STAGGER = 0.18
-    local span = 1 + STAGGER * (n - 1)
-    local cyTop = y
-    local lx, rx, ty, by2 = 1 / 0, -1 / 0, 1 / 0, -1 / 0
-    for i = 1, n do
-        local d = HITLOG_DEMO[i]
-        local e = easeOutCubic(reveal * span - (i - 1) * STAGGER)
-        if e > 0.004 then
-            local slide = (1 - e) * 10
-            local ry = cyTop + (i - 1) * (rowH + gap) + slide
-            local boxW = row(d.kind, d.label, x, ry, e)
-            if x - boxW / 2 < lx then lx = x - boxW / 2 end
-            if x + boxW / 2 > rx then rx = x + boxW / 2 end
-            if ry < ty then ty = ry end
-            if ry + rowH > by2 then by2 = ry + rowH end
-        end
-    end
-
-    if by2 > ty then
-        hl._rect = { x = lx, y = ty, w = rx - lx, h = by2 - ty }
-        ALPHA = reveal
-        local hint = "preview · drag to move"
-        text(x + 1, by2 + 7, { 0, 0, 0, 235 }, hint, FONT, "center")
-        text(x, by2 + 6, T.texthi, hint, FONT, "center")
-        ALPHA = 1
-    end
+    return startY - cy
 end
 
 function M:_drawHitlog()
@@ -1341,630 +1427,518 @@ function M:_drawHitlog()
     local sw, sh = 0, 0
     pcall(function() sw, sh = draw.GetScreenSize() end)
     if sw == 0 then return end
-    local cx, cy = sw / 2, sh / 2
 
-    pcall(function() draw.SetFont(FONT) end)
-    local padX, padY, dotR, dotGap = 11, 5, 3, 8
-
-    local txtH = floor((hl.font_size or T.font_size) + 0.5)
-    pcall(function() local _, h = draw.GetTextSize("Ayg"); if h and h > 4 then txtH = floor(h + 0.5) end end)
-    local rowH = txtH + padY * 2
-    local gap  = 6
-
-    local function row(kind, label, px, by, a)
-        local col  = hl.colors[kind] or hl.colors.hit or T.accent
-        local boxW = floor(padX * 2 + dotR * 2 + dotGap + textw(label) + 0.5)
-        local bx   = floor(px - boxW / 2 + 0.5)
-        by         = floor(by + 0.5)
-        ALPHA = a
-        local fill = lerpc(T.section, { col[1], col[2], col[3], 255 }, 0.12)
-        local brd  = lerpc(T.border,  { col[1], col[2], col[3], 255 }, 0.45)
-        rbox(bx, by, boxW, rowH, 6, fill, brd)
-
-        rfill(bx + 2, by + 4, 2, rowH - 8, 1, col)
-
-        local dcy = by + floor((rowH - dotR * 2) / 2 + 0.5)
-        rfill(bx + padX, dcy, dotR * 2, dotR * 2, dotR, col)
-        text(bx + padX + dotR * 2 + dotGap, by + padY, T.texthi, label, FONT)
-        ALPHA = 1
-        return boxW
-    end
-
-    local reveal = self._t or 0
-
-    if reveal > 0.02 then
-        if self._open ~= false then
-            hitlogEdit(hl, sw, sh, cx, cy, rowH, gap, reveal, row)
-        else
-
-            local x, y = hitlogPos(hl, sw, sh)
-            local n = #HITLOG_DEMO
-            local cyTop = y
-            for i = 1, n do
-                local d = HITLOG_DEMO[i]
-                local e = easeOutCubic(reveal)
-                if e > 0.004 then row(d.kind, d.label, x, cyTop + (i - 1) * (rowH + gap), e) end
-            end
-        end
-        return
-    end
-
-    local q = hl.queue
-    local life, fadeIn, fadeOut = hl.life, hl.fade_in, hl.fade_out
+    -- Prune expired
     local i = 1
-    while i <= #q do
-        if (now() - q[i].born) >= life + fadeOut + 0.05 then table.remove(q, i)
-        else i = i + 1 end
-    end
-    if #q == 0 then return end
-
-    local px, py = hitlogPos(hl, sw, sh)
-    local n = #q
-    local cyTop = py
-    for k = 1, n do
-        local e   = q[k]
-        local age = now() - e.born
-        local inE  = smoother(clamp(age / fadeIn, 0, 1))
-        local outE = smoother(clamp((age - life) / fadeOut, 0, 1))
-        local a    = inE * (1 - outE)
-        if a > 0.004 then
-            local rowY = cyTop + (n - k) * (rowH + gap) + (1 - inE) * 14
-            row(e.kind, hitlogLabel(e), px, rowY, a)
+    while i <= #hl.queue do
+        if (now() - hl.queue[i].born) >= hl.life + 0.1 then
+            table.remove(hl.queue, i)
+        else
+            i = i + 1
         end
     end
+
+    if #hl.queue == 0 then return end
+
+    local cx, cy = hitlogPos(hl, sw, sh)
+    hitlogRenderEntries(hl.queue, cx, cy, hl, sw, sh, now())
 end
 
-local function killMiscWatermark()
-    for _, k in ipairs(WM_MISC_KEYS) do
-        pcall(function()
-            local v = gui.GetValue(k)
-            if v == true or v == 1 then gui.SetValue(k, false) end
-        end)
-    end
-end
-
+-- ============================================================
+-- WATERMARK RENDERING
+-- ============================================================
 function M:_drawWatermark()
     local wm = self._watermark
     if not wm.enabled then return end
-
-    if DT and DT > 0 then
-        local inst = 1 / DT
-        wm._fps = wm._fps > 0 and (wm._fps + (inst - wm._fps) * 0.12) or inst
-    end
-
-    local t = now()
-    if t - (wm._killTry or -1) > 1 then wm._killTry = t; killMiscWatermark() end
-
-    local function nameSeg(s)
-        s = tostring(s or "")
-        local dot
-        for i = #s, 2, -1 do if s:sub(i, i) == "." then dot = i; break end end
-        if dot and dot >= 2 and dot < #s then
-            return { { s:sub(1, dot - 1), T.texthi, FONT_LOGO }, { s:sub(dot), T.accent, FONT_LOGO } }
-        end
-        return { { s, T.texthi, FONT_LOGO } }
-    end
-
-    local segs = {}
-    if wm.parts.cheat then segs[#segs + 1] = nameSeg(wm.cheat_name or "AIMWARE.NET") end
-    if wm.parts.lua   then segs[#segs + 1] = nameSeg(wm.lua_name or "MAHANMOITAP.CC") end
-    if wm.parts.user  then segs[#segs + 1] = { { tostring(wm.user or "?"), T.text, FONT } } end
-    if wm.parts.nick  then segs[#segs + 1] = { { tostring(wm.nick or "?"), T.text, FONT } } end
-    if wm.parts.fps   then segs[#segs + 1] = { { floor(wm._fps + 0.5) .. " fps", T.text, FONT } } end
-    if wm.parts.ping  then
-        segs[#segs + 1] = { { (wm.ping and (floor(wm.ping + 0.5) .. " ms") or "- ms"), T.text, FONT } }
-    end
-    if #segs == 0 then return end
 
     local sw, sh = 0, 0
     pcall(function() sw, sh = draw.GetScreenSize() end)
     if sw == 0 then return end
 
-    local PADX, PADY, DIVPAD = 11, 6, 9
-    local function runW(run)
-        if run[3] then pcall(function() draw.SetFont(run[3]) end) end
-        return textw(run[1])
+    -- Update FPS
+    local ft = 0
+    pcall(function() ft = globals.FrameTime() end)
+    if ft and ft > 0 then wm._fps = floor(1 / ft) end
+
+    local parts = {}
+    if wm.parts.cheat then parts[#parts + 1] = wm.cheat_name or "mahanmoi" end
+    if wm.parts.lua   then parts[#parts + 1] = wm.lua_name   or "CS2 Lua" end
+    if wm.parts.user   then
+        local u = wm.user
+        if not u then
+            pcall(function()
+                local h = ffi.C.GetModuleHandleA("steam_api64.dll")
+                if h then
+                    local get = ffi.C.GetProcAddress(h, "SteamAPI_ISteamFriends_GetPersonaName")
+                    if get then
+                        for _, v in ipairs({
+                            "SteamAPI_SteamFriends_v017", "SteamAPI_SteamFriends_v018",
+                            "SteamAPI_SteamFriends_v019", "SteamAPI_SteamFriends_v016",
+                            "SteamAPI_SteamFriends_v020"
+                        }) do
+                            local acc = ffi.C.GetProcAddress(h, v)
+                            if acc then
+                                local ok, iface = pcall(function()
+                                    return ffi.cast("void*(*)(void)", acc)()
+                                end)
+                                if ok and iface then
+                                    local ok2, name = pcall(function()
+                                        local s = ffi.cast("const char*(*)(void*)", get)(iface)
+                                        return s and ffi.string(s) or nil
+                                    end)
+                                    if ok2 and name and #name > 0 and #name < 64 then
+                                        u = name; wm.user = name; break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        if u then parts[#parts + 1] = u end
+    end
+    if wm.parts.nick then
+        local n = wm.nick
+        if n then parts[#parts + 1] = n end
+    end
+    if wm.parts.fps  then parts[#parts + 1] = wm._fps .. "fps" end
+    if wm.parts.ping then
+        local p = wm.ping
+        if p then parts[#parts + 1] = p .. "ms" end
     end
 
-    local totalW = PADX * 2
-    for si, seg in ipairs(segs) do
-        if si > 1 then totalW = totalW + DIVPAD * 2 + 1 end
-        for _, run in ipairs(seg) do totalW = totalW + runW(run) end
+    if #parts == 0 then return end
+    local label = table.concat(parts, "  |  ")
+
+    local tw = textw(label) + 20
+    local th = 24
+    local margin = 12
+
+    local pos = wm.pos or "top-right"
+    local right = pos:find("right") ~= nil
+    local top   = pos:find("top") ~= nil
+
+    local bx = right and (sw - margin - tw) or margin
+    local by = top and margin or (sh - margin - th)
+
+    rbox(bx, by, tw, th, 6, { 12, 12, 18, 200 }, { 112, 72, 170, 140 })
+    text(bx + 10, by + 5, T.texthi, label, FONT)
+end
+
+-- ============================================================
+-- DROPDOWN RENDERING
+-- ============================================================
+local function renderDropdown()
+    local dd = M._dd
+    if not dd then return end
+    local wd = dd.wd
+    local x, y, w = dd.x, dd.y, dd.w
+
+    local n = #wd.options
+    if n == 0 then M._dd = nil; return end
+
+    local itemH = 22
+    local maxH = 220
+    local visible = mmin(n, floor(maxH / itemH))
+    local dh = visible * itemH
+
+    -- Clamp to screen
+    local sw, sh = 0, 0
+    pcall(function() sw, sh = draw.GetScreenSize() end)
+    if y + dh > sh - 10 then y = sh - 10 - dh end
+    if y < 10 then y = 10 end
+    if x + w > sw - 10 then x = sw - 10 - w end
+
+    local maxScroll = mmax(0, n - visible)
+    if not dd.scroll then dd.scroll = 0 end
+    if (ms.wheel or 0) ~= 0 and hovering(x, y, w, dh) then
+        dd.scroll = dd.scroll - (ms.wheel > 0 and 1 or -1)
+        ms.wheel = 0
+    end
+    dd.scroll = clamp(dd.scroll, 0, maxScroll)
+
+    rbox(x, y, w, dh, 5, T.section, T.accent)
+
+    local isMulti = (wd.kind == "multicombo")
+
+    for vi = 0, visible - 1 do
+        local idx = vi + 1 + floor(dd.scroll)
+        if idx > n then break end
+        local iy = y + vi * itemH
+        local label = wd.options[idx]
+        local sel = isMulti and wd.value[idx] or (idx == wd.value)
+        local hov = hovering(x + 2, iy, w - 4, itemH)
+
+        if sel then
+            rfill(x + 3, iy + 1, w - 6, itemH - 2, 3, T.accent_bg)
+        elseif hov then
+            rfill(x + 3, iy + 1, w - 6, itemH - 2, 3, T.widget)
+        end
+
+        local col = sel and T.accent or (hov and T.texthi or T.text)
+        text(x + 12, iy + 4, col, tostring(label), FONT)
+
+        if isMulti and sel then
+            text(x + w - 20, iy + 4, T.accent, "+", FONT)
+        end
+
+        if clicked(x + 2, iy, w - 4, itemH) then
+            if isMulti then
+                wd.value[idx] = not wd.value[idx]
+            else
+                wd.value = idx
+                M._combo = nil
+                M._dd = nil
+            end
+        end
     end
 
-    local txtH = T.font_size
-    pcall(function() draw.SetFont(FONT) end)
-    pcall(function() local _, h = draw.GetTextSize("Ayg"); if h and h > 4 then txtH = floor(h + 0.5) end end)
-    local barH = txtH + PADY * 2
-
-    local margin = 14
-    local pos    = wm.pos or "top-right"
-    local right  = pos:find("right") ~= nil
-    local bottom = pos:find("bottom") ~= nil
-    local bx = right  and (sw - margin - totalW) or margin
-    local by = bottom and (sh - margin - barH)   or margin
-
-    ALPHA = 1
-    rbox(bx, by, totalW, barH, 6, T.section, T.border)
-    rfill(bx, by, totalW, 2, 6, T.accent, true, true, false, false)
-
-    local cx = bx + PADX
-    local ty = by + PADY
-    for si, seg in ipairs(segs) do
-        if si > 1 then
-            rect(cx + DIVPAD, by + 6, 1, barH - 12, T.divider)
-            cx = cx + DIVPAD * 2 + 1
-        end
-        for _, run in ipairs(seg) do
-            text(cx, ty, run[2], run[1], run[3])
-            cx = cx + textw(run[1])
-        end
+    -- Close on click outside
+    if ms.pressed and not hovering(x - 10, y - 10, w + 20, dh + 20) then
+        M._combo = nil
+        M._dd = nil
     end
 end
 
-local function tabLayout(tabs, win)
-    pcall(function() draw.SetFont(FONT_LOGO) end)
-    local startX = win.x + 16 + textw(T.title) + textw(T.title_tld) + 14
-    pcall(function() draw.SetFont(FONT) end)
-    local pos, tx = {}, startX
-    for i, t in ipairs(tabs) do
-        local tw = textw(t.name) + 28
+-- ============================================================
+-- COLOR PICKER RENDERING
+-- ============================================================
+local function renderColorPicker()
+    local cp = M._cp
+    if not cp then return end
+    local r = M._cpRect
+    if not r then return end
+
+    local pw, ph = 200, 160
+    local px, py = r.x, r.y
+
+    -- Clamp to screen
+    local sw, sh = 0, 0
+    pcall(function() sw, sh = draw.GetScreenSize() end)
+    if px + pw > sw - 10 then px = sw - 10 - pw end
+    if py + ph > sh - 10 then py = sh - 10 - ph end
+    if px < 10 then px = 10 end
+    if py < 10 then py = 10 end
+
+    rbox(px, py, pw, ph, 8, T.section, T.border)
+
+    -- SV area
+    local svX, svY, svW, svH = px + 10, py + 10, pw - 20, 90
+    local hsv = cp._hsv or { 0, 0, 1 }
+
+    -- Draw SV gradient (simplified: horizontal = S, vertical = V)
+    for sx = 0, svW - 1, 4 do
+        for sy = 0, svH - 1, 4 do
+            local s = sx / svW
+            local v = 1 - sy / svH
+            local cr, cg, cb = hsv2rgb(hsv[1], s, v)
+            rect(svX + sx, svY + sy, 4, 4, { cr, cg, cb, 255 })
+        end
+    end
+    rbox(svX, svY, svW, svH, 4, nil, T.border)
+
+    -- Hue bar
+    local hX, hY, hW, hH = px + 10, py + svH + 20, pw - 20, 14
+    for hx = 0, hW - 1, 2 do
+        local h = hx / hW
+        local cr, cg, cb = hsv2rgb(h, 1, 1)
+        rect(hX + hx, hY, 2, hH, { cr, cg, cb, 255 })
+    end
+    rbox(hX, hY, hW, hH, 4, nil, T.border)
+
+    -- Hue indicator
+    local hueX = hX + hsv[1] * hW
+    rect(hueX - 1, hY - 2, 3, hH + 4, { 255, 255, 255, 255 })
+
+    -- SV indicator
+    local svIx = svX + hsv[2] * svW
+    local svIy = svY + (1 - hsv[3]) * svH
+    rbox(svIx - 4, svIy - 4, 8, 8, 3, nil, { 255, 255, 255, 255 })
+
+    -- Interactions
+    if ms.pressed and not ms.consumed then
+        if hovering(svX, svY, svW, svH) then
+            ms.consumed = true
+            hsv[2] = clamp((ms.x - svX) / svW, 0, 1)
+            hsv[3] = clamp(1 - (ms.y - svY) / svH, 0, 1)
+        elseif hovering(hX, hY, hW, hH) then
+            ms.consumed = true
+            hsv[1] = clamp((ms.x - hX) / hW, 0, 1) % 1
+        end
+    end
+
+    -- Drag SV
+    if ms.down and M._cpDrag == "sv" then
+        hsv[2] = clamp((ms.x - svX) / svW, 0, 1)
+        hsv[3] = clamp(1 - (ms.y - svY) / svH, 0, 1)
+    end
+    if ms.down and M._cpDrag == "hue" then
+        hsv[1] = clamp((ms.x - hX) / hW, 0, 1) % 1
+    end
+
+    if ms.pressed and hovering(svX, svY, svW, svH) then M._cpDrag = "sv" end
+    if ms.pressed and hovering(hX, hY, hW, hH) then M._cpDrag = "hue" end
+    if not ms.down then M._cpDrag = nil end
+
+    -- Update color
+    local cr, cg, cb = hsv2rgb(hsv[1], hsv[2], hsv[3])
+    cp.value[1] = cr
+    cp.value[2] = cg
+    cp.value[3] = cb
+    cp.value[4] = 255
+    cp._hsv = hsv
+
+    -- Close on outside click
+    if ms.pressed and not hovering(px - 5, py - 5, pw + 10, ph + 10) then
+        M._cp = nil
+    end
+end
+
+-- ============================================================
+-- MAIN RENDER
+-- ============================================================
+local function renderTitlebar(x, y, w)
+    rbox(x, y, w, T.titlebar, 8, T.bg, T.border)
+    text(x + 14, y + 13, T.accent, T.title, FONT_LOGO)
+    text(x + 14 + textw(T.title) + 2, y + 13, T.textdim, T.title_tld, FONT_LOGO)
+
+    -- Close button
+    local cbX = x + w - 34
+    local cbY = y + 10
+    if hovering(cbX, cbY, 22, 22) then
+        rfill(cbX, cbY, 22, 22, 4, { 200, 60, 60, 180 })
+    end
+    text(cbX + 6, cbY + 4, { 255, 255, 255, 200 }, "X", FONT_B)
+    if clicked(cbX, cbY, 22, 22) then
+        M._visible = false
+    end
+end
+
+local function renderTabBar(x, y, w)
+    local tabs = M._tabs
+    if #tabs == 0 then return T.titlebar end
+
+    local tx = x
+    local pos = {}
+    for i, tab in ipairs(tabs) do
+        local tw = textw(tab.name) + 28
         pos[i] = { x = tx, w = tw }
         tx = tx + tw
     end
-    return pos
-end
 
-function M:_tabInput(win)
-    local pos = tabLayout(self._tabs, win)
-    for i, p in ipairs(pos) do
-        if clicked(p.x, win.y, p.w, T.titlebar) and self._active ~= i then
-            self._active = i; M._combo = nil; self._tabT = 0
-        end
+    local barH = T.titlebar
+    rbox(x, y, w, barH, 8, T.bg, T.border)
+
+    -- Active indicator
+    local active = tabs[M._active]
+    if active then
+        local ap = pos[M._active]
+        M._tabX = approach(M._tabX or ap.x, ap.x, 16)
+        M._tabW = approach(M._tabW or ap.w, ap.w, 16)
+        rfill(x + M._tabX + 6, y + barH - 4, M._tabW - 12, 2, 1, T.accent)
     end
-end
 
-function M:_drawTabBar(win)
-    text(win.x + 16, win.y + 17, T.texthi, T.title, FONT_LOGO)
-    local logoW = textw(T.title)
-    text(win.x + 16 + logoW, win.y + 17, T.accent, T.title_tld, FONT_LOGO)
-    local pos = tabLayout(self._tabs, win)
-
-    local act = pos[self._active]
-    local tgtX, tgtW = act and act.x or win.x, act and act.w or 0
-    local relX = tgtX - win.x
-    if not self._pillX then self._pillX, self._pillW = relX, tgtW end
-    self._pillX = approach(self._pillX, relX, 16)
-    self._pillW = approach(self._pillW, tgtW, 16)
-    rfill(win.x + self._pillX + 3, win.y + 9, self._pillW - 6, T.titlebar - 18, 5, T.accent_bg)
-
-    for i, t in ipairs(self._tabs) do
+    for i, tab in ipairs(tabs) do
         local p = pos[i]
-        local active = (i == self._active)
-        local hov = hovering(p.x, win.y, p.w, T.titlebar)
-        t._h = approach(t._h or 0, (active or hov) and 1 or 0, 16)
-        text(p.x + p.w / 2, win.y + 16, lerpc(T.textdim, T.texthi, t._h), t.name, FONT, "center")
+        local isAct = (i == M._active)
+        local hov = hovering(p.x, y, p.w, barH)
+        tab._h = approach(tab._h or 0, (isAct or hov) and 1 or 0, 16)
+        text(p.x + p.w / 2, y + 13, lerpc(T.textdim, T.texthi, tab._h), tab.name, FONT, "center")
+        if clicked(p.x, y, p.w, barH) and M._active ~= i then
+            M._active = i; M._tabT = 0
+        end
     end
+
+    return barH
 end
 
-local DD_ITEMH, DD_MAXVIS = 22, 9
-
-function M:_dropdownInput()
-    if not M._combo or not M._dd or M._dd.wd ~= M._combo then return end
-    local d, wd = M._dd, M._dd.wd
-    local n = #wd.options
-    local visible = mmin(n, DD_MAXVIS)
-    local listH = visible * DD_ITEMH
-    local maxScroll = mmax(0, n - visible)
-    wd._ddScroll = clamp(wd._ddScroll or 0, 0, maxScroll)
-
-    if (ms.wheel or 0) ~= 0 and hovering(d.x, d.y, d.w, listH) then
-        wd._ddScroll = clamp(wd._ddScroll - (ms.wheel > 0 and 1 or -1), 0, maxScroll)
-        ms.wheel = 0
+function M:_render()
+    -- Run on-frame callbacks
+    for _, fn in ipairs(self._onframe) do
+        pcall(fn)
     end
 
-    if maxScroll > 0 then
-        local trackX = d.x + d.w - 7
-        if ms.pressed and not ms.consumed and hovering(trackX - 2, d.y, 10, listH) then
-            ms.consumed = true; M._ddScrollbar = wd
-        end
-        if M._ddScrollbar == wd then
-            if ms.down then wd._ddScroll = rnd(clamp((ms.y - d.y) / listH, 0, 1) * maxScroll)
-            else M._ddScrollbar = nil end
-            return
-        end
-    end
-
-    if not ms.pressed or ms.consumed then return end
-    if hovering(d.x, d.y, d.w, listH) then
-        for vi = 0, visible - 1 do
-            if hovering(d.x, d.y + vi * DD_ITEMH, d.w, DD_ITEMH) then
-                local i = vi + 1 + floor(wd._ddScroll)
-                if i <= n then
-                    if wd.kind == "multicombo" then wd.value[i] = not wd.value[i] or nil
-                    else wd.value = i; M._combo = nil end
-                end
-                break
-            end
-        end
-        ms.consumed = true
-    elseif not hovering(d.x, d.y - d.bh, d.w, d.bh) then
-        M._combo = nil
-    end
-end
-
-function M:_drawDropdown()
-    if not M._combo or not M._dd or M._dd.wd ~= M._combo then return end
-    local d, wd = M._dd, M._dd.wd
-    local multi = (wd.kind == "multicombo")
-    local n = #wd.options
-    local visible = mmin(n, DD_MAXVIS)
-    local listH = visible * DD_ITEMH
-    local maxScroll = mmax(0, n - visible)
-    local scroll = clamp(wd._ddScroll or 0, 0, maxScroll)
-    local hasBar = maxScroll > 0
-    local iw = hasBar and (d.w - 9) or d.w
-    rbox(d.x, d.y, d.w, listH, 5, T.widget, T.accent)
-    for vi = 0, visible - 1 do
-        local i = vi + 1 + floor(scroll)
-        if i <= n then
-            local opt = wd.options[i]
-            local iy = d.y + vi * DD_ITEMH
-            local sel = multi and wd.value[i] or (not multi and wd.value == i)
-            local hov = hovering(d.x, iy, iw, DD_ITEMH)
-            if hov then rect(d.x + 1, iy, iw - 2, DD_ITEMH, T.widgethi) end
-            if multi then
-                rbox(d.x + 8, iy + 5, 12, 12, 3, sel and T.accent or T.widget, sel and T.accent or T.border)
-                text(d.x + 26, iy + 5, (sel or hov) and T.texthi or T.text, opt, FONT)
-            else
-                if sel then rect(d.x + 1, iy, 3, DD_ITEMH, T.accent) end
-                text(d.x + 9, iy + 5, (sel or hov) and T.texthi or T.text, opt, FONT)
-            end
-        end
-    end
-    if hasBar then
-        local trackX = d.x + d.w - 6
-        local thumbH = mmax(20, listH * visible / n)
-        local thumbY = d.y + (listH - thumbH) * (scroll / maxScroll)
-        rfill(trackX, d.y + 2, 4, listH - 4, 2, T.widget)
-        rfill(trackX, thumbY, 4, thumbH, 2, T.accent)
-    end
-end
-
-local CP = { pad = 12, svW = 138, svH = 128, barW = 14, gap = 10, sw = 22, sgap = 6, slots = 5 }
-local function cpWidth()  return CP.pad * 2 + CP.svW + CP.gap * 2 + CP.barW * 2 end
-local function cpHeight() return CP.pad * 2 + CP.svH + 52 end
-
-function M:_cpInput()
-    if not M._cp or not M._cpRect then return end
-    if not ms.pressed or ms.consumed then return end
-    local r = M._cpRect
-    if hovering(r.x, r.y, cpWidth(), cpHeight()) then ms.consumed = true
-    elseif not hovering(r.sx, r.sy, r.sw, r.sh) then M._cp = nil end
-end
-
-function M:_cpDraw()
-    if not M._cp or not M._cpRect then return end
-    local wd, r = M._cp, M._cpRect
-    if not wd._hsv then wd._hsv = { rgb2hsv(wd.value[1], wd.value[2], wd.value[3]) } end
-    local hsv = wd._hsv
-    local w = cpWidth()
-
-    if self._win then r.x = mmin(r.x, self._win.x + self._win.w - w - 6) end
-
-    rbox(r.x, r.y, w, cpHeight(), 6, T.section, T.accent)
-    local svX, svY, svW, svH = r.x + CP.pad, r.y + CP.pad, CP.svW, CP.svH
-    local hueX   = svX + svW + CP.gap
-    local alphaX = hueX + CP.barW + CP.gap
-
-    if ms.pressed and not M._cpDrag then
-        if hovering(svX, svY, svW, svH) then M._cpDrag = "sv"
-        elseif hovering(hueX, svY, CP.barW, svH) then M._cpDrag = "hue"
-        elseif hovering(alphaX, svY, CP.barW, svH) then M._cpDrag = "alpha" end
-    end
-    if M._cpDrag then
-        if ms.down then
-            if M._cpDrag == "sv" then
-                hsv[2] = clamp((ms.x - svX) / svW, 0, 1)
-                hsv[3] = clamp(1 - (ms.y - svY) / svH, 0, 1)
-            elseif M._cpDrag == "hue" then
-                hsv[1] = clamp((ms.y - svY) / svH, 0, 1)
-            elseif M._cpDrag == "alpha" then
-                wd.value[4] = rnd(clamp(1 - (ms.y - svY) / svH, 0, 1) * 255)
-            end
-        else M._cpDrag = nil end
-    end
-
-    M._swatches = M._swatches or {}
-    local sy   = svY + svH + 28
-    local addX = svX
-    local addHov = hovering(addX, sy, CP.sw, CP.sw)
-    local pre = { hsv2rgb(hsv[1], hsv[2], hsv[3]) }
-    if ms.pressed and addHov then
-        table.insert(M._swatches, 1, { pre[1], pre[2], pre[3], wd.value[4] or 255 })
-        while #M._swatches > CP.slots do table.remove(M._swatches) end
-    end
-    for i = 1, CP.slots do
-        local c = M._swatches[i]
-        local cxs = addX + i * (CP.sw + CP.sgap)
-        if c and ms.pressed and hovering(cxs, sy, CP.sw, CP.sw) then
-            hsv[1], hsv[2], hsv[3] = rgb2hsv(c[1], c[2], c[3])
-            wd.value[4] = c[4] or 255
-        end
-    end
-
-    local h, s, v = hsv[1], hsv[2], hsv[3]
-    local cr, cg, cb = hsv2rgb(h, s, v)
-    local av = wd.value[4] or 255
-
-    local hr, hg, hb = hsv2rgb(h, 1, 1)
-    rect(svX, svY, svW, svH, { hr, hg, hb })
-    for dx = 0, svW - 1, 2 do
-        rect(svX + dx, svY, 2, svH, { 255, 255, 255, 255 * (1 - dx / svW) })
-    end
-    for dy = 0, svH - 1, 2 do
-        rect(svX, svY + dy, svW, 2, { 0, 0, 0, 255 * (dy / svH) })
-    end
-    frame(svX, svY, svW, svH, T.border)
-    local cxp = svX + clamp(s, 0, 1) * svW
-    local cyp = svY + (1 - clamp(v, 0, 1)) * svH
-    rbox(cxp - 5, cyp - 5, 10, 10, 5, { cr, cg, cb }, { 255, 255, 255 })
-
-    for dy = 0, svH - 1, 2 do
-        rect(hueX, svY + dy, CP.barW, 2, { hsv2rgb(dy / svH, 1, 1) })
-    end
-    frame(hueX, svY, CP.barW, svH, T.border)
-    rfill(hueX - 2, svY + clamp(h, 0, 1) * svH - 2, CP.barW + 4, 4, 1, { 255, 255, 255 })
-
-    rect(alphaX, svY, CP.barW, svH, T.widget)
-    for dy = 0, svH - 1, 2 do
-        rect(alphaX, svY + dy, CP.barW, 2, { cr, cg, cb, 255 * (1 - dy / svH) })
-    end
-    frame(alphaX, svY, CP.barW, svH, T.border)
-    rfill(alphaX - 2, svY + (1 - av / 255) * svH - 2, CP.barW + 4, 4, 1, { 255, 255, 255 })
-
-    wd.value[1], wd.value[2], wd.value[3] = cr, cg, cb
-    local ty = svY + svH + 6
-    text(svX, ty, T.textdim, string.format("R %d  G %d  B %d  A %d", cr, cg, cb, av), FONT)
-
-    rbox(addX, sy, CP.sw, CP.sw, 4, addHov and T.widgethi or T.widget, T.border)
-    text(addX + CP.sw / 2, sy + 3, addHov and T.texthi or T.textdim, "+", FONT, "center")
-    for i = 1, CP.slots do
-        local c = M._swatches[i]
-        local cxs = addX + i * (CP.sw + CP.sgap)
-        rbox(cxs, sy, CP.sw, CP.sw, 4, c and { c[1], c[2], c[3], 255 } or T.bg2, T.border)
-    end
-end
-
-function M:_drag(win)
-    if ms.pressed and not ms.consumed and hovering(win.x, win.y, win.w, T.titlebar) then
-        ms.consumed = true
-        self._dragWin = { dx = ms.x - win.x, dy = ms.y - win.y }
-    end
-    if self._dragWin then
-        if ms.down then win.x = ms.x - self._dragWin.dx; win.y = ms.y - self._dragWin.dy
-        else self._dragWin = nil end
-    end
-end
-
-function M:_frame()
-    local real = self._win
-    local tab = self._tabs[self._active]
-
-    local contentH = 0
-    if tab then pcall(function() contentH = tabContentHeight(tab) end) end
-    local chrome = T.titlebar + T.pad * 2
-
-    local screenW, screenH = 1920, 1080
-    pcall(function() screenW, screenH = draw.GetScreenSize() end)
-    screenW = screenW or 1920
-    screenH = screenH or 1080
-
-    -- resize grip (bottom-right)
-    local grip = 14
-    if self._resizeEnabled ~= false then
-        local gx, gy = real.x + real.w - grip, real.y + real.h - grip
-        if ms.pressed and not ms.consumed and hovering(gx, gy, grip, grip) then
-            ms.consumed = true
-            self._resize = { ox = ms.x, oy = ms.y, ow = real.w, oh = real.h }
-            self._autoH = false
-        end
-        if self._resize then
-            if ms.down then
-                real.w = clamp(self._resize.ow + (ms.x - self._resize.ox), 520, screenW - 40)
-                real.h = clamp(self._resize.oh + (ms.y - self._resize.oy), 300, screenH - 40)
-            else
-                self._resize = nil
-            end
-        end
-    end
-
-    if self._autoH then
-        local targetH = clamp(contentH + chrome + 8, 280, screenH - 60)
-        real.h = real.h + (targetH - real.h) * clamp(DT * 14, 0, 1)
-    end
-
-    local ease = smooth(self._t)
-    ALPHA = ease
-    local oy = (1 - ease) * 14
-    local win = { x = real.x, y = real.y - oy, w = real.w, h = real.h }
-
-    rbox(win.x, win.y, win.w, win.h, 7, T.bg, T.border)
-    rfill(win.x + 1, win.y + T.titlebar, win.w - 2, win.h - T.titlebar - 1, 6, T.bg2, false, false, true, true)
-
-    self:_tabInput(win)
-    self:_drag(win)
-    self:_dropdownInput()
-    self:_cpInput()
-
-    local availH = win.h - chrome
-    local maxScroll = mmax(0, contentH - availH)
-    self._scroll = clamp(self._scroll or 0, 0, maxScroll)
-
-    -- scrollbar drag
-    if maxScroll > 0 then
-        local barX, barW = win.x + win.w - 7, 4
-        local th = mmax(20, (availH / contentH) * availH)
-        local ty = win.y + T.titlebar + (availH - th) * (self._scroll / maxScroll)
-        if ms.pressed and not ms.consumed and hovering(barX - 2, win.y + T.titlebar, barW + 6, availH) then
-            ms.consumed = true
-            self._scrollDrag = true
-        end
-        if self._scrollDrag then
-            if ms.down then
-                local frac = clamp((ms.y - (win.y + T.titlebar) - th * 0.5) / mmax(1, availH - th), 0, 1)
-                self._scroll = frac * maxScroll
-            else
-                self._scrollDrag = nil
-            end
-        end
-    end
-
-    local tabEase = smooth(self._tabT)
-    local cx = win.x + T.pad + (1 - tabEase) * 18
-    local cy = win.y + T.titlebar + T.pad - self._scroll
-    local cw = win.w - T.pad * 2 - 8
-    clipTop, clipBottom = win.y + T.titlebar, win.y + win.h - 2
-    if tab then
-        local ok, err = pcall(function() tab:render(cx, cy, cw) end)
-        if not ok then print("[mahanmoi] tab '" .. tostring(tab.name) .. "' error: " .. tostring(err)) end
-    end
-    clipTop, clipBottom = nil, nil
-
-    if maxScroll > 0 and (ms.wheel or 0) ~= 0 and hovering(win.x, win.y + T.titlebar, win.w, win.h - T.titlebar) then
-        self._scroll = clamp(self._scroll - (ms.wheel > 0 and 36 or -36), 0, maxScroll)
-        ms.wheel = 0
-    end
-
-    rfill(win.x + 1, win.y + 1, win.w - 2, T.titlebar - 1, 6, T.bg, true, true, false, false)
-    rfill(win.x, win.y, win.w, 2, 7, T.accent, true, true, false, false)
-    rect(win.x + 1, win.y + T.titlebar, win.w - 2, 1, T.border)
-    self:_drawTabBar(win)
-
-    if maxScroll > 0 then
-        local th = mmax(20, (availH / contentH) * availH)
-        local ty = win.y + T.titlebar + (availH - th) * (self._scroll / maxScroll)
-        rfill(win.x + win.w - 6, win.y + T.titlebar + 2, 3, availH - 4, 1, T.widget)
-        rfill(win.x + win.w - 6, ty, 3, th, 1, T.accent)
-    end
-
-    -- resize grip visual
-    if self._resizeEnabled ~= false then
-        local gx, gy = win.x + win.w - 11, win.y + win.h - 11
-        rect(gx, gy + 6, 8, 1, T.textdim)
-        rect(gx + 3, gy + 3, 5, 1, T.textdim)
-        rect(gx + 6, gy, 2, 1, T.textdim)
-    end
-
-    self:_drawDropdown()
-    self:_cpDraw()
-
-    if M._focus and ms.pressed and not ms.consumed then M._focus = nil end
-
-    real.x = win.x
-    real.y = win.y + oy
-end
-
-function M:OpenFolder()
-    pcall(function()
-        ffi.cdef[[ int ShellExecuteA(void*, const char*, const char*, const char*, const char*, int); ]]
-    end)
-    pcall(function()
-        local shell = ffi.load("shell32")
-        shell.ShellExecuteA(nil, "open", M._dir or ".", nil, nil, 1)
-    end)
-end
-
-function M:_initScreen()
     local win = self._win
-    ALPHA = smooth(self._t)
-    rbox(win.x, win.y, win.w, win.h, 7, T.bg, T.border)
-    rfill(win.x, win.y, win.w, 2, 7, T.accent, true, true, false, false)
-    local dots = string.rep(".", floor(now() * 2) % 4)
-    text(win.x + win.w / 2, win.y + win.h / 2 - 12, T.texthi, "Initialization in progress" .. dots, FONT_B, "center")
-    text(win.x + win.w / 2, win.y + win.h / 2 + 12, T.textdim, "fetching fonts, please wait", FONT, "center")
+    local x, y, w, h = win.x, win.y, win.w, win.h
+
+    -- Window background
+    rbox(x, y, w, h, 10, T.bg, T.border)
+
+    -- Titlebar
+    local barH = renderTabBar(x, y, w)
+
+    -- Tab content
+    self._tabT = self._tabT + (1 - self._tabT) * clamp(DT * ANIM.open, 0, 1)
+    local e = smooth(self._tabT)
+
+    clipTop = y + barH
+    clipBottom = y + h
+
+    local contentY = y + barH + 6
+    local contentH = h - barH - 6
+
+    if contentH > 0 then
+        local tab = self._tabs[self._active]
+        if tab then
+            ALPHA = e
+            tab:render(x + 10, contentY, w - 20)
+            ALPHA = 1
+        end
+    end
+
+    clipTop = nil
+    clipBottom = nil
+
+    -- Dropdown (on top of everything)
+    renderDropdown()
+
+    -- Color picker
+    renderColorPicker()
+
+    -- Toasts
+    self:_drawToasts()
+
+    -- Hitlog
+    self:_drawHitlog()
+
+    -- Watermark
+    self:_drawWatermark()
 end
 
-function M:Build(opts)
-    opts = opts or {}
-    if opts.w then self._win.w = opts.w end
-    if opts.h then self._win.h = opts.h end
-    if opts.x then self._win.x = opts.x end
-    if opts.y then self._win.y = opts.y end
-    if opts.autoH ~= nil then
-        self._autoH = opts.autoH and true or false
-    else
-        self._autoH = (opts.h == nil)
-    end
-    if opts.resize ~= nil then
-        self._resizeEnabled = opts.resize and true or false
-    else
-        self._resizeEnabled = true
-    end
+-- ============================================================
+-- TOGGLE & DRAG
+-- ============================================================
+M._visible = true
+M._dragging = false
+M._dragOff = { x = 0, y = 0 }
 
-    _getMouse = resolveMouse()
-    _getWheel = resolveWheel()
-    _clock    = resolveClock()
-    initFonts()
-    self._initco = coroutine.create(fontInitCoro)
-    if not _getMouse then print("[mahanmoi] WARNING: mouse position API not found -- cursor won't track") end
+local MENU_KEY = 0x7A -- F11
 
-    local menuRef
-    pcall(function() menuRef = gui.Reference("MENU") end)
-
-    callbacks.Register("Draw", function()
-        local open = true
-        if menuRef then pcall(function() open = menuRef:IsActive() end) end
-        self._open = open
-        if not open then self._focus = nil; self._inputDrag = nil end
-
-        local t  = now()
-        local dt = 1
-        if _clock then dt = self._last and clamp(t - self._last, 0, 0.1) or 0 end
-        self._last = t
-        DT = dt
-
-        self._t    = self._t    + ((open and 1 or 0) - self._t) * clamp(dt * ANIM.open, 0, 1)
-        self._tabT = self._tabT + (1 - self._tabT)              * clamp(dt * ANIM.tab,  0, 1)
-
-        if self._initco then
-            pcall(function()
-                if coroutine.status(self._initco) ~= "dead" then coroutine.resume(self._initco) end
-            end)
-            if coroutine.status(self._initco) == "dead" then self._initco = nil end
-            pcall(function() self:_initScreen() end)
-            return
-        end
-
-        updateMouse()
-        pcall(function() self:_drawToasts() end)
-        pcall(function() self:_drawHitlog() end)
-        pcall(function() self:_drawWatermark() end)
-
-        ALPHA = 1
-        for _, fn in ipairs(self._onframe) do pcall(fn, UI) end
-
-        if not open and self._t < 0.005 then self._t = 0; return end
-
-        local ok, err = pcall(function() self:_frame() end)
-        if not ok then print("[mahanmoi] frame error: " .. tostring(err)) end
-    end)
-
-    pcall(function() callbacks.Register("CreateMove", function(cmd)
-        if not (M._open and M._focus) or not cmd then return end
-        pcall(function() cmd.forwardmove = 0 end)
-        pcall(function() cmd.sidemove = 0 end)
-        pcall(function() cmd.upmove = 0 end)
-        pcall(function() cmd.buttons = 0 end)
-        pcall(function() cmd:SetForwardMove(0) end)
-        pcall(function() cmd:SetSideMove(0) end)
-        pcall(function() cmd:SetUpMove(0) end)
-        pcall(function() cmd:SetButtons(0) end)
-    end) end)
-
-    print(string.format("[mahanmoi.cc] guilib v%s ready: %d tabs, mouse=%s clock=%s",
-        tostring(M.VERSION), #self._tabs, _getMouse and "ok" or "NIL", _clock and "ok" or "NIL"))
+function M:Toggle()
+    self._visible = not self._visible
     return self
 end
+
+function M:SetKey(k) MENU_KEY = k; return self end
+
+local function checkToggle()
+    if keyPressed(MENU_KEY) then
+        M._visible = not M._visible
+    end
+end
+
+local function checkDrag()
+    local win = M._win
+    if ms.pressed and not ms.consumed and hovering(win.x, win.y, win.w, T.titlebar) then
+        ms.consumed = true
+        M._dragging = true
+        M._dragOff.x = ms.x - win.x
+        M._dragOff.y = ms.y - win.y
+    end
+    if M._dragging then
+        if ms.down then
+            win.x = ms.x - M._dragOff.x
+            win.y = ms.y - M._dragOff.y
+        else
+            M._dragging = false
+        end
+    end
+end
+
+-- ============================================================
+-- MAIN FRAME CALLBACK
+-- ============================================================
+local _lastTime = 0
+local _fontCo = nil
+local _fontsReady = false
+
+local function onFrame()
+    local t = now()
+    DT = mmin(t - _lastTime, 0.1)
+    _lastTime = t
+
+    -- Font init coroutine
+    if not _fontsReady then
+        if not _fontCo then
+            _fontCo = coroutine.create(fontInitCoro)
+        end
+        if _fontCo then
+            local ok = coroutine.resume(_fontCo)
+            if not ok or coroutine.status(_fontCo) == "dead" then
+                _fontsReady = true
+                if not FONT then initFonts() end
+            end
+        end
+    end
+
+    -- Resolve input methods once
+    if not _getMouse then _getMouse = resolveMouse() end
+    if not _clock   then _clock   = resolveClock() end
+    if not _getWheel then _getWheel = resolveWheel() end
+
+    updateMouse()
+    checkToggle()
+    checkDrag()
+
+    if M._visible and FONT then
+        M:_render()
+    end
+
+    -- Always render toasts/hitlog/watermark even when menu is hidden
+    if not M._visible and FONT then
+        M:_drawToasts()
+        M:_drawHitlog()
+        M:_drawWatermark()
+    end
+end
+
+-- ============================================================
+-- INIT
+-- ============================================================
+local function init()
+    initFonts()
+
+    -- Register callback
+    local registered = false
+
+    if client and client.register_callback then
+        pcall(function()
+            client.register_callback("paint_ui", onFrame)
+            registered = true
+        end)
+    end
+
+    if not registered and client_set_event_callback then
+        pcall(function()
+            client_set_event_callback("paint_ui", onFrame)
+            registered = true
+        end)
+    end
+
+    if not registered and callbacks and callbacks.Register then
+        pcall(function()
+            callbacks.Register("Draw", onFrame)
+            registered = true
+        end)
+    end
+
+    if not registered then
+        pcall(function()
+            client.register_callback("paint", onFrame)
+            registered = true
+        end)
+    end
+
+    if registered then
+        print("[mahanmoi] guilib v" .. M.VERSION .. " initialized")
+    else
+        print("[mahanmoi] guilib WARNING: no paint callback registered")
+        -- Expose for manual calling
+        M._frame = onFrame
+    end
+end
+
+init()
 
 return M
