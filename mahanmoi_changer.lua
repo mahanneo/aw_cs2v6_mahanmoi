@@ -1,6 +1,3 @@
-بکاب اسکین چنجر
-
-
 local ffi  = ffi
 local band, rshift, bxor, lshift = bit.band, bit.rshift, bit.bxor, bit.lshift
 local floor = math.floor
