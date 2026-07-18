@@ -1,3 +1,6 @@
+لودر
+
+
 -- ============================================================
 -- mahanmoi Loader
 -- Fetches main script from GitHub, caches locally, falls back
