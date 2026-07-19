@@ -1,4 +1,3 @@
-
 local ffi  = ffi
 local band, rshift, bxor, lshift = bit.band, bit.rshift, bit.bxor, bit.lshift
 local floor = math.floor
@@ -1277,5 +1276,21 @@ local ok_root, root_str = pcall(models_root)
 print(string.format("[changer] precache: fn=%s irs=%s cbuf=%s root=%s",
     fnptr.precache and "ok" or "NIL", g_IRS and "ok" or "NIL",
     fnptr.cbuf_insert and "ok" or "NIL", tostring(ok_root and root_str or "ERR")))
+
+-- Stubs to prevent errors since Models UI is removed in mahanmoi.lua
+C.modelList = function() return { "[ disabled ]" }, {} end
+C.refreshModels = function() return { "[ disabled ]" }, {} end
+C.getLocalModel = function() return nil end
+C.setLocalModel = function() end
+C.getModelScanAlt = function() return false end
+C.setModelScanAlt = function() end
+C.getModelFilter = function() return "" end
+C.setModelFilter = function() end
+C.applyModelTarget = function() return 0 end
+C.clearModelTarget = function() return 0 end
+C.clearAllModels = function() end
+C.getModelPersist = function() return false end
+C.setModelPersist = function() end
+C.listPlayers = function() return {} end
 
 return C
