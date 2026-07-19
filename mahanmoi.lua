@@ -1,6 +1,3 @@
-لوا اصلی 
-
-
 local BASE        = rawget(_G, "MAHANMOI_BASE") or "https://raw.githubusercontent.com/mahanneo/aw_cs2v6_mahanmoi/main/"
 local GUILIB_URL  = BASE .. "mahanmoi_guilib.lua"
 local CHANGER_URL = BASE .. "mahanmoi_changer.lua"
