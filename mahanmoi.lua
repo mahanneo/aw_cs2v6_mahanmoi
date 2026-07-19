@@ -3,7 +3,6 @@ local GUILIB_URL  = BASE .. "mahanmoi_guilib.lua"
 local CHANGER_URL = BASE .. "mahanmoi_changer.lua"
 
 local ffi = rawget(_G, "ffi")
-
 local function r_ptr(a) return tonumber(ffi.cast("uint64_t*", a)[0]) end
 local function valid(p) return p ~= nil and p > 0x10000 and p < 0x7FFFFFFFFFFF end
 
@@ -13,16 +12,10 @@ local function fetch(url, cacheFile)
     pcall(function() src = http.Get(bust) end)
     if type(src) ~= "string" or #src <= 500 then pcall(function() src = http.Get(url) end) end
     if type(src) == "string" and #src > 500 then
-        pcall(function()
-            local f = file.Open(cacheFile, "w")
-            if f then f:Write(src); f:Close() end
-        end)
+        pcall(function() local f = file.Open(cacheFile, "w"); if f then f:Write(src); f:Close() end end)
         return src, "server"
     end
-    pcall(function()
-        local f = file.Open(cacheFile, "r")
-        if f then src = f:Read(); f:Close() end
-    end)
+    pcall(function() local f = file.Open(cacheFile, "r"); if f then src = f:Read(); f:Close() end end)
     if type(src) == "string" and #src > 500 then return src, "cache" end
     return nil
 end
@@ -45,7 +38,6 @@ local C = load(CHANGER_URL, ".\\mahanmoi_lua\\mahanmoi_changer.lua", "changer")
 if type(C) ~= "table" then return end
 
 local floor = math.floor
-
 local weaponLb, skinLb, skinWd
 local sWear, sSeed, cbAuto
 local cbVm, vmX, vmY, vmZ
@@ -107,9 +99,7 @@ local function syncSkins()
     local c = C.getCfg(it.def)
     if c then
         sWear:Set(c.wear); sSeed:Set(c.seed)
-        for i = 2, #paints do
-            if paints[i] == c.paint then skinWd.value = i; break end
-        end
+        for i = 2, #paints do if paints[i] == c.paint then skinWd.value = i; break end end
     end
     lastSig = sig()
 end
@@ -640,9 +630,7 @@ end)
 
 
 -- ======================= NEW NAME CHANGER SCRIPT =======================
-ffi.cdef[[
-    void* GetModuleHandleA(const char* lpModuleName);
-]]
+pcall(function() ffi.cdef [[ void* GetModuleHandleA(const char* lpModuleName); ]] end)
 
 local NULL = 0x0
 local ENGINE2_DLL_NAME = "engine2.dll"
