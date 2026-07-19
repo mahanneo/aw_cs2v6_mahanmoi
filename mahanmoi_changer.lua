@@ -1277,4 +1277,19 @@ print(string.format("[changer] precache: fn=%s irs=%s cbuf=%s root=%s",
     fnptr.precache and "ok" or "NIL", g_IRS and "ok" or "NIL",
     fnptr.cbuf_insert and "ok" or "NIL", tostring(ok_root and root_str or "ERR")))
 
+-- Stubs for removed Models UI
+C.modelList = function() return { "[ disabled ]" }, {} end
+C.refreshModels = function() return { "[ disabled ]" }, {} end
+C.getLocalModel = function() return nil end
+C.setLocalModel = function() end
+C.getModelScanAlt = function() return false end
+C.setModelScanAlt = function() end
+C.getModelFilter = function() return "" end
+C.setModelFilter = function() end
+C.applyModelTarget = function() return 0 end
+C.clearModelTarget = function() return 0 end
+C.clearAllModels = function() end
+C.getModelPersist = function() return false end
+C.setModelPersist = function() end
+C.listPlayers = function() return {} end
 return C
