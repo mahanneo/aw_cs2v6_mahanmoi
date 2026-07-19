@@ -3,6 +3,7 @@ local band, rshift, bxor, lshift = bit.band, bit.rshift, bit.bxor, bit.lshift
 local floor = math.floor
 
 local off = {}
+
 local DUMPER = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/"
 
 local FIELDS = {
@@ -39,14 +40,12 @@ local FIELDS = {
     m_EconGloves           = { "m_EconGloves", "C_CSPlayerPawn" },
     m_bNeedToReApplyGloves = { "m_bNeedToReApplyGloves", "C_CSPlayerPawn" },
 }
-
 local function pull_offset(j, name, after)
     local init = 1
     if after then local p = j:find('"' .. after .. '"%s*:%s*{'); if p then init = p end end
     local v = j:match('"' .. name .. '"%s*:%s*(%d+)', init)
     return v and tonumber(v) or nil
 end
-
 pcall(function()
     local j = http.Get(DUMPER .. "client_dll.json")
     if type(j) ~= "string" then return end
@@ -57,7 +56,6 @@ pcall(function()
         if v then off[key] = v end
     end
 end)
-
 off.m_szWorldModel = 48
 off.m_modelState = off.m_modelState or 336
 off.m_hModel     = off.m_hModel     or 160
@@ -91,12 +89,10 @@ local function sig_rva(modBase, mod, pattern, instrLen)
     a = tonumber(a)
     return (a + instrLen + r_i32(a + 3)) - modBase
 end
-
 local function sig_disp(mod, pattern)
     local a = mem.FindPattern(mod, pattern); if not a or a == 0 then return nil end
     return r_i32(tonumber(a) + 3)
 end
-
 local FALLBACK_ENTITYLIST = 0x254EE60
 local FALLBACK_LOCALCTRL  = 0x237EBA0
 
@@ -125,7 +121,6 @@ local function mul32(a, b)
     local bh = floor(b/0x10000)
     return (al*(b%0x10000) + ((al*bh + ah*(b%0x10000)) % 0x10000)*0x10000) % 0x100000000
 end
-
 local MM = 0x5bd1e995
 local function murmur2(str, seed)
     local len = #str
@@ -144,7 +139,6 @@ local function murmur2(str, seed)
     h = tou32(bxor(h, rshift(h, 13))); h = mul32(h, MM); h = tou32(bxor(h, rshift(h, 15)))
     return h
 end
-
 local function subclass_hash(def) return murmur2(tostring(def):lower(), 0x31415926) end
 
 local DLL = "client.dll"
@@ -156,7 +150,6 @@ local sig = {
 }
 local SBG_SIG = "E8 ?? ?? ?? ?? EB 0C 48 8B CF"
 local fn, fnptr = {}, {}
-
 local function resolve()
     for name, pattern in pairs(sig) do
         if not fn[name] then local a = mem.FindPattern(DLL, pattern); if a and a ~= 0 then fn[name] = a end end
@@ -171,17 +164,19 @@ local function resolve()
     if fn.regen_skins     and not fnptr.regen_skins     then fnptr.regen_skins     = ffi.cast("void(*)(void)",               fn.regen_skins) end
     if fn.set_body_group  and not fnptr.set_body_group  then fnptr.set_body_group  = ffi.cast("void(*)(void*, const char*, unsigned int)", fn.set_body_group) end
 end
-
 local function vfunc(this, index)
     if not valid(this) then return nil end
     local vt = r_ptr(this); if not valid(vt) then return nil end
     local f = r_ptr(vt + index*8); if not valid(f) then return nil end
     return f
 end
-
 local function vcall_void(this, index)
     local f = vfunc(this, index); if not f then return end
     ffi.cast("void(*)(void*)", f)(ffi.cast("void*", this))
+end
+local function vcall_void_bool(this, index, b)
+    local f = vfunc(this, index); if not f then return end
+    ffi.cast("void(*)(void*, int)", f)(ffi.cast("void*", this), b and 1 or 0)
 end
 
 local KNIVES = {
@@ -1281,167 +1276,5 @@ local ok_root, root_str = pcall(models_root)
 print(string.format("[changer] precache: fn=%s irs=%s cbuf=%s root=%s",
     fnptr.precache and "ok" or "NIL", g_IRS and "ok" or "NIL",
     fnptr.cbuf_insert and "ok" or "NIL", tostring(ok_root and root_str or "ERR")))
-
-
-
-local C = { offsets = off, items = {}, names = {}, defToItem = {}, cfg = {} }
-local allItems = {}
-for _, w in ipairs(WEAPONS) do allItems[#allItems+1] = { name = w.name, def = w.def, type = "weapon" } end
-for _, k in ipairs(KNIVES) do allItems[#allItems+1] = { name = k.name, def = k.def, type = "knife" } end
-for _, g in ipairs(GLOVES) do allItems[#allItems+1] = { name = g.name, def = g.def, type = "gloves" } end
-for i, it in ipairs(allItems) do
-    C.items[i] = it
-    C.names[i] = it.name
-    if it.def then C.defToItem[it.def] = i end
-end
-
-function C.skinList(def)
-    local t = SKINS[def]
-    if not t then return { "[ no skins ]" }, { 0 } end
-    local n, p = { "Default (None)" }, { 0 }
-    for _, s in ipairs(t) do n[#n+1] = s[1]; p[#p+1] = s[2] end
-    return n, p
-end
-
-function C.getCfg(def)
-    return C.cfg[def]
-end
-
-function C.setCfg(def, paint, wear, seed)
-    C.cfg[def] = { paint = paint, wear = wear, seed = seed }
-    pcall(function()
-        local f = file.Open(".\\mahanmoi_lua\\skin_cfg.txt", "w")
-        if f then f:Write(json.serialize(C.cfg)); f:Close() end
-    end)
-end
-
-function C.clearConfig()
-    C.cfg = {}
-    pcall(function() file.Write(".\\mahanmoi_lua\\skin_cfg.txt", "") end)
-end
-
-pcall(function()
-    local f = file.Open(".\\mahanmoi_lua\\skin_cfg.txt", "r")
-    if f then local d = f:Read(); f:Close(); if d and #d > 0 then C.cfg = json.parse(d) or {} end end
-end)
-
-resolve()
-
-function C.activeDef()
-    if not off.dwLocalPlayerController or not off.dwEntityList then return nil end
-    local base = mem.GetModuleBase(DLL); if not base then return nil end
-    local lctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(lctrl) then return nil end
-    local pawn = r_ptr(lctrl + off.m_hPlayerPawn); if not valid(pawn) then return nil end
-    local ws = r_ptr(pawn + off.m_pWeaponServices); if not valid(ws) then return nil end
-    local ah = r_u32(ws + off.m_hActiveWeapon); if ah == 0xFFFFFFFF then return nil end
-    local elist = r_ptr(base + off.dwEntityList); if not valid(elist) then return nil end
-    local wep = r_ptr(elist + 120 * ah); if not valid(wep) then return nil end
-    return r_i32(wep + off.m_iItemDefinitionIndex)
-end
-
-function C.knifeDef()
-    if not off.dwLocalPlayerController or not off.dwEntityList then return nil end
-    local base = mem.GetModuleBase(DLL); if not base then return nil end
-    local lctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(lctrl) then return nil end
-    local pawn = r_ptr(lctrl + off.m_hPlayerPawn); if not valid(pawn) then return nil end
-    local ws = r_ptr(pawn + off.m_pWeaponServices); if not valid(ws) then return nil end
-    for i=0, 7 do
-        local h = r_u32(ws + off.m_hMyWeapons + i * 4)
-        if h ~= 0xFFFFFFFF then
-            local elist = r_ptr(base + off.dwEntityList); if not valid(elist) then return nil end
-            local wep = r_ptr(elist + 120 * h); if not valid(wep) then return nil end
-            local def = r_i32(wep + off.m_iItemDefinitionIndex)
-            if is_knife(def) then return def end
-        end
-    end
-    return nil
-end
-
-function C.apply(it, paint, wear, seed)
-    if not it or not it.def then return end
-    resolve()
-    if not fnptr.set_model or not fnptr.update_subclass then return end
-    local base = mem.GetModuleBase(DLL); if not base then return end
-    local lctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(lctrl) then return end
-    local pawn = r_ptr(lctrl + off.m_hPlayerPawn); if not valid(pawn) then return end
-    local ws = r_ptr(pawn + off.m_pWeaponServices); if not valid(ws) then return end
-
-    local hash = subclass_hash(tostring(it.def))
-    
-    local function processWep(h)
-        if h == 0xFFFFFFFF then return false end
-        local elist = r_ptr(base + off.dwEntityList); if not valid(elist) then return false end
-        local wep = r_ptr(elist + 120 * h); if not valid(wep) then return false end
-        local curDef = r_i32(wep + off.m_iItemDefinitionIndex)
-        if curDef ~= it.def then return false end
-        
-        local scn = r_ptr(wep + off.m_pGameSceneNode); if not valid(scn) then return false end
-        local ms = r_ptr(scn + off.m_modelState); if not valid(ms) then return false end
-        local curHash = r_u32(ms + off.m_nSubclassID)
-        if curHash ~= hash then return false end
-
-        local am = r_ptr(wep + off.m_AttributeManager); if not valid(am) then return false end
-        local item = r_ptr(am + off.m_Item); if not valid(item) then return false end
-        
-        w_i32(item + off.m_nFallbackPaintKit, paint)
-        w_f32(item + off.m_flFallbackWear, wear)
-        w_i32(item + off.m_nFallbackSeed, seed)
-        w_i32(item + off.m_nFallbackStatTrak, -1)
-        
-        if fnptr.regen_skins then fnptr.regen_skins() end
-        return true
-    end
-
-    if it.type == "knife" or it.type == "weapon" then
-        local ah = r_u32(ws + off.m_hActiveWeapon)
-        if processWep(ah) then
-            C.setCfg(it.def, paint, wear, seed)
-            return
-        end
-        for i=0, 7 do if processWep(r_u32(ws + off.m_hMyWeapons + i * 4)) then break end end
-    elseif it.type == "gloves" then
-        if off.m_EconGloves and off.m_bNeedToReApplyGloves then
-            w_u8(pawn + off.m_EconGloves, it.def)
-            w_u8(pawn + off.m_bNeedToReApplyGloves, 1)
-            C.setCfg(it.def, paint, wear, seed)
-        end
-    end
-end
-
-function C.remove(it)
-    if not it or not it.def then return end
-    C.apply(it, 0, 0.0001, 0)
-    C.cfg[it.def] = nil
-    pcall(function()
-        local f = file.Open(".\\mahanmoi_lua\\skin_cfg.txt", "w")
-        if f then f:Write(json.serialize(C.cfg)); f:Close() end
-    end)
-end
-
-function C.resetAll()
-    for _, it in ipairs(C.items) do
-        if it.def then C.apply(it, 0, 0.0001, 0) end
-    end
-    C.clearConfig()
-end
-
-function C.setOpt(k, v) pcall(function() local t = json.parse(file.Read(".\\mahanmoi_lua\\opts.txt") or "{}") or {}; t[k]=v; file.Write(".\\mahanmoi_lua\\opts.txt", json.serialize(t)) end) end
-function C.getOpt(k, d) local v=d; pcall(function() local t = json.parse(file.Read(".\\mahanmoi_lua\\opts.txt") or "{}") or {}; v=t[k] or d end) return v end
-
--- Stubs for removed Models UI
-C.modelList = function() return { "[ disabled ]" }, {} end
-C.refreshModels = function() return { "[ disabled ]" }, {} end
-C.getLocalModel = function() return nil end
-C.setLocalModel = function() end
-C.getModelScanAlt = function() return false end
-C.setModelScanAlt = function() end
-C.getModelFilter = function() return "" end
-C.setModelFilter = function() end
-C.applyModelTarget = function() return 0 end
-C.clearModelTarget = function() return 0 end
-C.clearAllModels = function() end
-C.getModelPersist = function() return false end
-C.setModelPersist = function() end
-C.listPlayers = function() return {} end
 
 return C
