@@ -50,18 +50,23 @@ if type(C) ~= "table" then return end
 
 local floor = math.floor
 
+local VM = {}
+local HS = {}
+
 local weaponLb, skinLb, skinWd
 local sWear, sSeed, cbAuto
-
--- Models variables completely removed as requested
-
+local modelLb, modelWd, modelPaths
 local cbVm, vmX, vmY, vmZ
 local hsOn, hsCmb, hsCmbWd, hsVol
 local ksOn, ksCmb, ksCmbWd, ksVol
 local hlOn, hlMiss, hlHit, hlHurt, hlKill
 local wmOn, wmElems, wmPos
 local rgOn, rgCmb, rgCmbWd, rgPen, rgMin
+local ncOn, ncMode, ncSrc, ncText, ncSpeed
+local vrOn, vrMode
+local SND_NAMES, SND_PATHS
 
+local lastModelSel = -1
 local curPaints    = { 0 }
 local lastSel      = -1
 local lastSig      = nil
@@ -126,7 +131,124 @@ local function persistOpts()
     if v ~= lastAuto then lastAuto = v; C.setOpt("autoFollow", v) end
 end
 
--- Models sync functions removed entirely
+local function syncModel()
+    if not modelLb then return end
+    local sel = modelLb:Get()
+    if sel == lastModelSel then return end
+    lastModelSel = sel
+    C.setLocalModel(modelPaths and modelPaths[sel] or nil)
+end
+
+do
+    local page, match, origRel, ok = nil, nil, nil, false
+
+    local function r_i32(a) return ffi.cast("int32_t*",  a)[0] end
+    local function w_u8 (a, v) ffi.cast("uint8_t*", a)[0] = v end
+    local function w_i32(a, v) ffi.cast("int32_t*", a)[0] = v end
+    local function w_f32(a, v) ffi.cast("float*",   a)[0] = v end
+
+    local function le64(v)
+        local t = {}
+        for _ = 1, 8 do t[#t + 1] = v % 256; v = math.floor(v / 256) end
+        return t
+    end
+
+    local function alloc_near(target, size)
+        local gran = 0x10000
+        local base = target - (target % gran)
+        for i = 1, 0x8000 do
+            local lo, hi = base - i * gran, base + i * gran
+            if lo > 0x10000 then
+                local p = ffi.C.VirtualAlloc(ffi.cast("void*", lo), size, 0x3000, 0x40)
+                if p ~= nil then return p end
+            end
+            local p2 = ffi.C.VirtualAlloc(ffi.cast("void*", hi), size, 0x3000, 0x40)
+            if p2 ~= nil then return p2 end
+        end
+        return nil
+    end
+
+    local function install()
+        if type(ffi) ~= "table" then print("[mahanmoi] VM: no ffi"); return false end
+        pcall(function() ffi.cdef [[
+            void* VirtualAlloc(void*, size_t, uint32_t, uint32_t);
+            int   VirtualProtect(void*, size_t, uint32_t, uint32_t*);
+            void* GetCurrentProcess(void);
+            int   FlushInstructionCache(void*, void*, size_t);
+        ]] end)
+
+        local a = mem.FindPattern("client.dll", SIG.vm)
+        if not a or a == 0 then print("[mahanmoi] VM: sig not found"); return false end
+        match = a
+        local orig = a + 5 + r_i32(a + 1)
+
+        local p = alloc_near(orig, 0x1000)
+        if p == nil then print("[mahanmoi] VM: alloc failed"); return false end
+        page = tonumber(ffi.cast("uintptr_t", p))
+        local code = page + 16
+
+        local b = { 0x53, 0x56, 0x48,0x83,0xEC,0x28, 0x48,0x89,0xD6, 0x48,0xB8 }
+        for _, v in ipairs(le64(orig)) do b[#b + 1] = v end
+        for _, v in ipairs({ 0xFF,0xD0, 0x48,0xBB }) do b[#b + 1] = v end
+        for _, v in ipairs(le64(page)) do b[#b + 1] = v end
+        for _, v in ipairs({
+            0x8B,0x0B, 0x85,0xC9, 0x74,0x2B,
+            0xF3,0x0F,0x10,0x4B,0x04, 0xF3,0x0F,0x58,0x0E, 0xF3,0x0F,0x11,0x0E,
+            0xF3,0x0F,0x10,0x4B,0x08, 0xF3,0x0F,0x58,0x4E,0x04, 0xF3,0x0F,0x11,0x4E,0x04,
+            0xF3,0x0F,0x10,0x4B,0x0C, 0xF3,0x0F,0x58,0x4E,0x08, 0xF3,0x0F,0x11,0x4E,0x08,
+            0x48,0x83,0xC4,0x28, 0x5E, 0x5B, 0xC3,
+        }) do b[#b + 1] = v end
+        for i = 0, #b - 1 do w_u8(code + i, b[i + 1]) end
+        w_i32(page, 0); w_f32(page + 4, 0); w_f32(page + 8, 0); w_f32(page + 12, 0)
+
+        local rel = code - (match + 5)
+        if rel < -2147483648 or rel > 2147483647 then print("[mahanmoi] VM: rel32 overflow"); return false end
+        origRel = r_i32(match + 1)
+        local old = ffi.new("uint32_t[1]")
+        ffi.C.VirtualProtect(ffi.cast("void*", match), 5, 0x40, old)
+        w_i32(match + 1, rel)
+        ffi.C.VirtualProtect(ffi.cast("void*", match), 5, old[0], old)
+        pcall(function() ffi.C.FlushInstructionCache(ffi.C.GetCurrentProcess(), ffi.cast("void*", match), 5) end)
+        print("[mahanmoi] VM: installed")
+        return true
+    end
+
+    -- Disabled on load: code patch crashes after CS2 update (execute AV on unmapped RIP)
+    -- pcall(function() ok = install() end)
+    print("[mahanmoi] VM: auto-install disabled (safe mode)")
+
+    function VM.set(on, x, y, z)
+        if not ok or not page then return end
+        w_i32(page, on and 1 or 0)
+        w_f32(page + 4, x or 0)
+        w_f32(page + 8, y or 0)
+        w_f32(page + 12, z or 0)
+    end
+
+    function VM.uninstall()
+        if not (ok and match and origRel) then return end
+        pcall(function()
+            local old = ffi.new("uint32_t[1]")
+            ffi.C.VirtualProtect(ffi.cast("void*", match), 5, 0x40, old)
+            w_i32(match + 1, origRel)
+            ffi.C.VirtualProtect(ffi.cast("void*", match), 5, old[0], old)
+        end)
+    end
+end
+pcall(function() callbacks.Register("Unload", function() pcall(VM.uninstall) end) end)
+
+local lastVm = nil
+local function syncVm()
+    local on = cbVm:Get()
+    local x, y, z = vmX:Get(), vmY:Get(), vmZ:Get()
+    VM.set(on, x, y, z)
+    local s = (on and "1" or "0") .. ":" .. x .. ":" .. y .. ":" .. z
+    if s ~= lastVm then
+        lastVm = s
+        C.setOpt("vm_on", on)
+        C.setOpt("vm_x", x); C.setOpt("vm_y", y); C.setOpt("vm_z", z)
+    end
+end
 
 do
     local f = ffi
@@ -357,7 +479,7 @@ do
     end
 end
 
-local RG = { ok = false, ids = {}, names = {}, allow = {}, add = 200, enabled = false, installed = false, minimize = false }
+local RG = { ok = false, ids = {}, names = {}, allow = {}, add = 200, enabled = false, installed = false }
 do
     local f = ffi
     local CITY = {
@@ -403,6 +525,7 @@ do
         local base = hmod ~= nil and tonumber(f.cast("uintptr_t", hmod)) or nil
         local modSize = 0
         if base then
+            -- PE SizeOfImage at OptionalHeader+0x38 (PE32+), e_lfanew at 0x3C
             pcall(function()
                 local e_lfanew = f.cast("uint32_t*", base + 0x3C)[0]
                 modSize = tonumber(f.cast("uint32_t*", base + e_lfanew + 0x50)[0]) or 0
@@ -456,6 +579,7 @@ do
             end
             local T  = base + rva
             local b0 = f.cast("uint8_t*", T)
+            -- skip if target looks like padding / empty (outdated RVA after update)
             if b0[0] == 0x00 or b0[0] == 0xCC then return nil end
             local p  = alloc_near(T); if p == nil then return nil end
             local TR = tonumber(f.cast("uintptr_t", p))
@@ -571,7 +695,9 @@ do
         RG.enumerate = enumerate
 
         local okI = false
-        pcall(function() okI = install() end)
+        -- Disabled: hardcoded steamnetworkingsockets RVAs cause execute AV on inject after update
+        -- pcall(function() okI = install() end)
+        -- if utils ~= nil and vtbl ~= nil then pcall(enumerate) end
         if utils ~= nil and vtbl ~= nil then pcall(enumerate) end
         RG.ok = okI
         if okI then print("[mahanmoi] region: hooked " .. #hooks .. " fns (" .. #RG.ids .. " pops)")
@@ -581,6 +707,199 @@ do
     if #RG.names == 0 then RG.names = { "[ join a server, then Refresh ]" } end
 end
 pcall(function() callbacks.Register("Unload", function() pcall(RG.uninstall) end) end)
+
+local NC = { ok = false, installed = false, enabled = false }
+do
+    local f = ffi
+    local DLL  = "engine2.dll"
+    local SIG_SETINFO = "40 55 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 45 33 FF"
+    local STEAL = 16
+    local NAME_OFF, KEY_OFF, VAL_OFF = 0x440, 0x8, 0x10
+
+    local T, orig, keepCb
+
+    local function w_u8(a, v)  f.cast("uint8_t*",  a)[0] = v end
+    local function w_i32(a, v) f.cast("int32_t*",  a)[0] = v end
+    local function le64(a, v)  f.cast("uint64_t*", a)[0] = f.cast("uint64_t", v) end
+
+    local function alloc_near(target)
+        local gran = 0x10000
+        local b = target - (target % gran)
+        for i = 1, 0x8000 do
+            local lo = b - i * gran
+            if lo > 0x10000 then
+                local p = f.C.VirtualAlloc(f.cast("void*", lo), 64, 0x3000, 0x40)
+                if p ~= nil then return p end
+            end
+            local p2 = f.C.VirtualAlloc(f.cast("void*", b + i * gran), 64, 0x3000, 0x40)
+            if p2 ~= nil then return p2 end
+        end
+        return nil
+    end
+
+    function NC.setName(s)
+        s = tostring(s or "")
+        if #s == 0 then NC._buf = nil; return end
+        NC._buf = f.new("char[?]", #s + 1, s)
+    end
+
+    local function onSetInfo(rcx, a2)
+        if NC.enabled and NC._buf ~= nil and a2 ~= nil then
+            pcall(function()
+                local a2n = tonumber(f.cast("uintptr_t", a2))
+                if a2n and a2n >= 0x1000 then
+                    local arg_list = r_ptr(a2n + NAME_OFF)
+                    if arg_list and arg_list >= 0x1000 then
+                        local key = r_ptr(arg_list + KEY_OFF)
+                        if valid(key) then
+                            local ks = f.string(f.cast("const char*", key))
+                            if ks:lower() == "name" then
+                                f.cast("const char**", arg_list + VAL_OFF)[0] = f.cast("const char*", NC._buf)
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        return orig(rcx, a2)
+    end
+
+    local function install()
+        if type(f) ~= "table" then print("[mahanmoi] namechanger: no ffi"); return false end
+        local a = mem.FindPattern(DLL, SIG_SETINFO)
+        if not a or a == 0 then print("[mahanmoi] namechanger: sig not found"); return false end
+        T = a
+        local b0 = f.cast("uint8_t*", T)
+        local p = alloc_near(T); if p == nil then print("[mahanmoi] namechanger: alloc failed"); return false end
+        local TR = tonumber(f.cast("uintptr_t", p))
+
+        local saved = {}
+        for i = 0, STEAL - 1 do saved[i] = b0[i]; w_u8(TR + i, b0[i]) end
+        w_u8(TR + STEAL, 0xFF); w_u8(TR + STEAL + 1, 0x25); w_i32(TR + STEAL + 2, 0)
+        le64(TR + STEAL + 6, T + STEAL)
+
+        orig = f.cast("char (*)(void*, void*)", f.cast("void*", TR))
+        keepCb = f.cast("char (*)(void*, void*)", onSetInfo)
+
+        local old = f.new("uint32_t[1]")
+        if f.C.VirtualProtect(f.cast("void*", T), STEAL, 0x40, old) == 0 then
+            print("[mahanmoi] namechanger: protect failed"); return false
+        end
+        w_u8(T, 0xFF); w_u8(T + 1, 0x25); w_i32(T + 2, 0)
+        le64(T + 6, tonumber(f.cast("uintptr_t", keepCb)))
+        for i = 14, STEAL - 1 do w_u8(T + i, 0x90) end
+        f.C.VirtualProtect(f.cast("void*", T), STEAL, old[0], old)
+        pcall(function() f.C.FlushInstructionCache(f.C.GetCurrentProcess(), f.cast("void*", T), STEAL) end)
+
+        NC._saved = saved
+        NC.installed = true
+        return true
+    end
+
+    function NC.uninstall()
+        if not (NC.installed and T and NC._saved) then return end
+        pcall(function()
+            local old = f.new("uint32_t[1]")
+            f.C.VirtualProtect(f.cast("void*", T), STEAL, 0x40, old)
+            for i = 0, STEAL - 1 do w_u8(T + i, NC._saved[i]) end
+            f.C.VirtualProtect(f.cast("void*", T), STEAL, old[0], old)
+            f.C.FlushInstructionCache(f.C.GetCurrentProcess(), f.cast("void*", T), STEAL)
+        end)
+        NC.installed = false
+    end
+
+    local CVAR_RVA, RESOLVE_RVA = 0x685698, 0x3FC080
+    local VT_FIND, FLAGS_OFF    = 0x58, 0x30
+    local F_USERINFO, F_PROTECTED = 0x200, 0x2
+    local bit_ = rawget(_G, "bit")
+
+    function NC.fixFlags()
+        if type(f) ~= "table" or not bit_ then return false end
+        if NC._flags then
+            local p = f.cast("uint32_t*", NC._flags)
+            p[0] = bit_.band(bit_.bor(p[0], F_USERINFO), bit_.bnot(F_PROTECTED))
+            return true
+        end
+        local base = mem.GetModuleBase(DLL); if not base then return false end
+        local cvar = r_ptr(base + CVAR_RVA);  if not valid(cvar) then return false end
+        local vt   = r_ptr(cvar);             if not valid(vt)   then return false end
+        local findAddr = r_ptr(vt + VT_FIND); if not valid(findAddr) then return false end
+        local findfn  = f.cast("uint64_t (*)(void*, void*, const char*, int)", findAddr)
+        local resolve = f.cast("void* (*)(void*, uint32_t, int16_t)", base + RESOLVE_RVA)
+        local nameC   = f.new("char[5]", "name")
+        local outbuf  = f.new("uint8_t[64]")
+        local res     = f.new("uint64_t[4]")
+        local done = false
+        NC._diag = { base = base, cvar = cvar, vt = vt, find = findAddr }
+        pcall(function()
+            local ref = tonumber(findfn(f.cast("void*", cvar), outbuf, nameC, 1))
+            NC._diag.ref = ref
+            if not ref or ref < 0x10000 then return end
+            local handle = f.cast("uint32_t*", ref)[0]
+            NC._diag.handle = tonumber(handle)
+            resolve(res, handle, -1)
+            local obj = tonumber(res[1])
+            NC._diag.obj = obj
+            if not valid(obj) then return end
+            NC._flags = obj + FLAGS_OFF
+            local p = f.cast("uint32_t*", NC._flags)
+            NC._diag.old = tonumber(p[0])
+            p[0] = bit_.band(bit_.bor(p[0], F_USERINFO), bit_.bnot(F_PROTECTED))
+            NC._diag.new = tonumber(p[0])
+            done = true
+        end)
+        return done
+    end
+
+    function NC.dump()
+        local d = NC._diag or {}
+        local function hx(v) return v and string.format("%X", v) or "nil" end
+        print("[mahanmoi] NC: base=" .. hx(d.base) .. " cvar=" .. hx(d.cvar) ..
+              " vt=" .. hx(d.vt) .. " find=" .. hx(d.find) .. " ref=" .. hx(d.ref) ..
+              " handle=" .. tostring(d.handle) .. " obj=" .. hx(d.obj) ..
+              " flags " .. hx(d.old) .. "->" .. hx(d.new))
+    end
+
+    function NC.steamName()
+        if type(f) ~= "table" then return nil end
+        if NC._steam then return NC._steam end
+        local h = f.C.GetModuleHandleA("steam_api64.dll"); if h == nil then return nil end
+        local getName = f.C.GetProcAddress(h, "SteamAPI_ISteamFriends_GetPersonaName")
+        if getName == nil then return nil end
+        local accFn
+        for _, v in ipairs({ "SteamAPI_SteamFriends_v017", "SteamAPI_SteamFriends_v018",
+                             "SteamAPI_SteamFriends_v019", "SteamAPI_SteamFriends_v016",
+                             "SteamAPI_SteamFriends_v020" }) do
+            local p = f.C.GetProcAddress(h, v)
+            if p ~= nil then accFn = p; break end
+        end
+        if accFn == nil then return nil end
+        local res
+        pcall(function()
+            local iface = f.cast("void* (*)(void)", accFn)()
+            if iface == nil then return end
+            local s = f.cast("const char* (*)(void*)", getName)(iface)
+            if s ~= nil then
+                local str = f.string(s)
+                if #str > 0 and #str < 64 then res = str end
+            end
+        end)
+        if res then NC._steam = res end
+        return res
+    end
+
+    function NC.origName()
+        return NC.steamName() or NC._captured
+    end
+
+    local okI = false
+    -- Disabled: SetInfo code patch crashes on inject after CS2 update
+    -- pcall(function() okI = install() end)
+    NC.ok = okI
+    if okI then print("[mahanmoi] namechanger: hooked SetInfo @ " .. string.format("%X", T))
+    else        print("[mahanmoi] namechanger: auto-install disabled (safe mode)") end
+end
+pcall(function() callbacks.Register("Unload", function() pcall(NC.uninstall) end) end)
 
 local CHAT = { ok = false }
 do
@@ -685,7 +1004,6 @@ pcall(function()
     end)
 end)
 
--- ======================= UI SECTION =======================
 local tab = M:Tab("Skins")
 
 tab:Row()
@@ -711,7 +1029,131 @@ cfgSec:Button("Reset config", function() C.clearConfig() end)
 
 local vtab = M:Tab("Visuals")
 
--- MODELS SUB-TAB COMPLETELY REMOVED AS REQUESTED
+local submodels = vtab:Sub("Models")
+submodels:Row()
+local vSec = submodels:Section("List")
+local mNames
+mNames, modelPaths = C.modelList()
+modelLb = vSec:Listbox("", mNames, 300, 1)
+modelWd = vSec.ws[#vSec.ws]
+submodels:Col()
+local vSsec = submodels:Section("Scan")
+local cbModelAlt = vSsec:Checkbox("Characters only (skip exg/materials)", C.getModelScanAlt())
+local inpModelSearch = vSsec:Input("Search name", C.getModelFilter(), "filter by name...")
+local function reloadModelList()
+    C.setModelScanAlt(cbModelAlt:Get())
+    C.setModelFilter(inpModelSearch:Get() or "")
+    local cur = C.getLocalModel()
+    local n, p = C.refreshModels()
+    modelPaths     = p
+    modelWd.items  = n
+    modelWd.value  = 1
+    modelWd.scroll = 0
+    if cur then
+        for i = 2, #p do if p[i] == cur then modelWd.value = i; break end end
+    end
+    lastModelSel = modelWd.value
+end
+vSsec:Button("Refresh models", reloadModelList)
+vSsec:Button("Apply search", reloadModelList)
+
+local lastModelAlt = cbModelAlt:Get()
+local function syncModelSearch()
+    if not cbModelAlt then return end
+    local alt = cbModelAlt:Get()
+    if alt == lastModelAlt then return end
+    lastModelAlt = alt
+    reloadModelList()
+end
+
+-- Apply stays in the SAME right column under Scan (second Row was pushed off-screen by List fill)
+local vAsec = submodels:Section("Apply")
+local TARGET_OPTS = { "Myself", "Teammates", "Enemies", "Selected player" }
+local cmbModelTarget = vAsec:Combo("Apply target", TARGET_OPTS, 1)
+local cmbModelPlayer = vAsec:Combo("Player", { "(refresh in-game)" }, 1)
+local cmbModelPlayerWd = vAsec.ws[#vAsec.ws]
+local cbModelPersist = vAsec:Checkbox("Persist (reapply each round)", C.getModelPersist and C.getModelPersist() or true)
+local playerListData = {}
+
+local function refreshPlayerCombo()
+    local players = {}
+    pcall(function()
+        if C.listPlayers then players = C.listPlayers() or {} end
+    end)
+    table.sort(players, function(a, b)
+        if a.is_local ~= b.is_local then return a.is_local end
+        return (a.name or "") < (b.name or "")
+    end)
+    playerListData = players
+    local names = {}
+    for i, info in ipairs(players) do
+        local label = info.name or ("#" .. tostring(info.idx))
+        if info.is_local then label = label .. " [You]" end
+        names[#names + 1] = label
+    end
+    if #names == 0 then names[1] = "(no alive players)" end
+    if cmbModelPlayerWd then
+        cmbModelPlayerWd.options = names
+        if (cmbModelPlayerWd.value or 1) > #names then cmbModelPlayerWd.value = 1 end
+    end
+end
+
+local function selectedModelPath()
+    local sel = modelLb and modelLb:Get() or 1
+    if not modelPaths or sel <= 1 then return nil end
+    local p = modelPaths[sel]
+    if type(p) == "string" and p ~= "" then return p end
+    return nil
+end
+
+local function selectedPlayerKey()
+    local sel = cmbModelPlayer:Get() or 1
+    local info = playerListData[sel]
+    return info and info.key or nil
+end
+
+vAsec:Button("Refresh players", function()
+    refreshPlayerCombo()
+    pcall(function() M:Notify("players: " .. tostring(#playerListData)) end)
+end)
+vAsec:Button("Apply model to target", function()
+    local path = selectedModelPath()
+    if not path then pcall(function() M:Notify("select a model first") end); return end
+    local mode = cmbModelTarget:Get() or 1
+    pcall(function() C.setModelPersist(cbModelPersist:Get()) end)
+    local n = 0
+    pcall(function() n = C.applyModelTarget(mode, selectedPlayerKey(), path) or 0 end)
+    pcall(function() M:Notify(string.format("applied to %d player(s)", n)) end)
+end)
+vAsec:Button("Clear target models", function()
+    local mode = cmbModelTarget:Get() or 1
+    local n = 0
+    pcall(function() n = C.clearModelTarget(mode, selectedPlayerKey()) or 0 end)
+    pcall(function() M:Notify(string.format("cleared %d assignment(s)", n)) end)
+end)
+vAsec:Button("Clear all model assignments", function()
+    pcall(function() C.clearAllModels() end)
+    lastModelSel = 1
+    if modelWd then modelWd.value = 1 end
+    pcall(function() M:Notify("all model assignments cleared") end)
+end)
+
+local lastPersist = cbModelPersist:Get()
+local function syncModelPersist()
+    local on = cbModelPersist:Get()
+    if on == lastPersist then return end
+    lastPersist = on
+    pcall(function() C.setModelPersist(on) end)
+end
+
+local playerRefreshTick = 0
+local function syncPlayerList()
+    playerRefreshTick = playerRefreshTick + 1
+    if playerRefreshTick < 120 then return end
+    if playerRefreshTick == 120 or playerRefreshTick % 300 == 0 then
+        pcall(refreshPlayerCombo)
+    end
+end
 
 local sublocal = vtab:Sub("Local")
 sublocal:Row()
@@ -795,108 +1237,425 @@ local ncClock = (function()
     return function() return 0 end
 end)()
 
-local function drawWatermark()
-    if not wmOn:Get() then return end
-    -- Original watermark drawing logic would be safely handled by your guilib internals
+local NC_LEET = {
+    a = { "@", "4" }, b = { "6", "8" }, c = { "<" },
+    e = { "3" },      f = { "ph" },     g = { "9", "6" }, h = { "#" },
+    i = { "1", "!" },     l = { "1" },
+    m = { "|\\/|" },  n = { "|\\|" },   o = { "0" },
+    r = { "|2" },     s = { "$" }, t = { "7" },
+    v = { "\\/" },    z = { "2" },
+}
+
+local function ncGlitch(target)
+    local function corrupt()
+        local chars = {}
+        for i = 1, #target do
+            local c = target:sub(i, i)
+            local alt = NC_LEET[c:lower()]
+            if i > 1 and i < #target and alt and math.random() < 0.4 then
+                c = alt[math.random(#alt)]
+            end
+            chars[i] = c
+        end
+        return table.concat(chars)
+    end
+    local seq = {}
+    local function burst(n)
+        for _ = 1, n do seq[#seq + 1] = { t = corrupt(), ms = 55 } end
+    end
+    burst(6)
+    seq[#seq + 1] = { t = target, ms = 2000 }
+    burst(6)
+    seq[#seq + 1] = { t = target, ms = 2000 }
+    return seq
 end
 
--- ======================= MISC TAB & REGION =======================
-local mtab = M:Tab("Misc")
+local NC_FEM = {
+    { t = "",          ms = 550 },
+    { t = "$F",         ms = 55 },  { t = "$f",         ms = 85 },
+    { t = "$f3",        ms = 55 },  { t = "$fe",        ms = 85 },
+    { t = "$fe|\\/|",   ms = 55 },  { t = "$fem",       ms = 85 },
+    { t = "$fem6",      ms = 55 },  { t = "$femb",      ms = 85 },
+    { t = "$femb0",     ms = 55 },  { t = "$fembo",     ms = 85 },
+    { t = "$femboY",    ms = 55 },  { t = "$femboy",    ms = 85 },
+    { t = "$femboyT",   ms = 55 },  { t = "$femboyt",   ms = 85 },
+    { t = "$femboyt@",  ms = 55 },  { t = "$femboyta",  ms = 85 },
+    { t = "$femboytaP", ms = 55 },  { t = "$mahanmoi", ms = 90 },
+    { t = "$mahanmoi",  ms = 70 }, { t = "$mahanmoi$", ms = 2000 },
+    { t = "$mahanmoi",  ms = 70 }, { t = "$mahanmoi",   ms = 70 },
+    { t = "$femboyta",  ms = 60 },  { t = "$femboyt",   ms = 60 },
+    { t = "$femboy",    ms = 60 },  { t = "$fembo",     ms = 60 },
+    { t = "$femb",      ms = 60 },  { t = "$fem",       ms = 60 },
+    { t = "$fe",        ms = 60 },  { t = "$f",         ms = 60 },
+}
 
-local subrg = mtab:Sub("Region")
-subrg:Row()
-local rgSec = subrg:Section("Region Locker")
-rgOn = rgSec:Checkbox("Enable Region Locker", false)
-rgCmb = rgSec:Combo("Select Region", RG.names, 1)
-rgCmbWd = rgSec.ws[#rgSec.ws]
-rgPen = rgSec:Slider("Ping Penalty (ms)", 200, 0, 500, 10, "%.0f")
-rgMin = rgSec:Checkbox("Minimize allowed ping", false)
-rgSec:Button("Refresh Regions", function() 
-    pcall(RG.enumerate)
-    rgCmbWd.options = RG.names
-    rgCmbWd.value = 1
-end)
+local NC_AIM = {
+    { t = "",            ms = 450 },
+    { t = "[A]",           ms = 120 },  { t = "[AI]",          ms = 120 },
+    { t = "[AIM]",         ms = 120 },  { t = "[AIMW]",        ms = 120 },
+    { t = "[AIMWA]",       ms = 120 },  { t = "[AIMWAR]",      ms = 120 },
+    { t = "[AIMWARE]",     ms = 110 }, { t = "[AIMWARE.]",    ms = 120 },
+    { t = "[AIMWARE.N]",   ms = 90 },  { t = "[AIMWARE.NE]",  ms = 120 },
+    { t = "[AIMWARE.NET]", ms = 2000 },
+    { t = "[AIMWARE.NE]",  ms = 120 },  { t = "[AIMWARE.N]",   ms = 120 },
+    { t = "[AIMWARE.]",    ms = 120 },  { t = "[AIMWARE]",     ms = 120 },
+    { t = "[AIMWAR]",      ms = 120 },  { t = "[AIMWA]",       ms = 120 },
+    { t = "[AIMW]",        ms = 120 },  { t = "[AIM]",         ms = 120 },
+    { t = "[AI]",          ms = 120 },  { t = "[A]",           ms = 120 },
+}
 
+local NC_FEM_G = ncGlitch("$mahanmoi$")
+local NC_AIM_G = ncGlitch("[AIMWARE.NET]")
 
--- ======================= SYNCHRONIZATION & MAIN LOOPS =======================
-
--- Fixed Viewmodel Sync using safe ConVars instead of crashing FFI hooks
-local lastVm = nil
-local function syncVm()
-    local on = cbVm:Get()
-    local x, y, z = vmX:Get(), vmY:Get(), vmZ:Get()
-    
-    if on then
-        client.SetConVar("viewmodel_offset_x", x, true)
-        client.SetConVar("viewmodel_offset_y", y, true)
-        client.SetConVar("viewmodel_offset_z", z, true)
-    else
-        client.SetConVar("viewmodel_offset_x", 0, true)
-        client.SetConVar("viewmodel_offset_y", 0, true)
-        client.SetConVar("viewmodel_offset_z", 0, true)
-    end
-
-    local s = (on and "1" or "0") .. ":" .. x .. ":" .. y .. ":" .. z
-    if s ~= lastVm then
-        lastVm = s
-        C.setOpt("vm_on", on)
-        C.setOpt("vm_x", x); C.setOpt("vm_y", y); C.setOpt("vm_z", z)
-    end
-end
-
-local function syncRegion()
-    RG.enabled = rgOn:Get()
-    RG.allow = {}
-    if RG.enabled then
-        local sel = rgCmb:Get()
-        local id = RG.ids[sel]
-        if id then
-            RG.allow[id] = true
-            RG.add = rgPen:Get()
-            RG.minimize = rgMin:Get()
+local function ncParse(str, defMs)
+    local frames = {}
+    for tok in (str .. ","):gmatch("([^,]*),") do
+        if tok ~= "" then
+            local t, ms = tok:match("^(.-):(%d+)$")
+            if t then frames[#frames + 1] = { t = t, ms = tonumber(ms) }
+            else      frames[#frames + 1] = { t = tok, ms = defMs } end
         end
     end
+    return frames
 end
 
-callbacks.Register("Draw", "mahanmoi_main_draw", function()
-    pcall(autoFollow)
-    pcall(syncSkins)
-    pcall(applySelected)
-    pcall(persistOpts)
-    
-    pcall(syncVm)
-    pcall(HS.sync)
-    pcall(syncRegion)
-    
-    pcall(HS.missTick)
-    pcall(VR.flush)
-    pcall(drawWatermark)
+local function ncFrameAt(seq, t, factor)
+    factor = factor or 1
+    local n = #seq; if n == 0 then return "" end
+    local total = 0
+    for i = 1, n do total = total + seq[i].ms * factor end
+    if total <= 0 then return seq[1].t end
+    local ms  = (t * 1000) % total
+    local acc = 0
+    for i = 1, n do
+        acc = acc + seq[i].ms * factor
+        if ms < acc then return seq[i].t end
+    end
+    return seq[n].t
+end
+
+local function ncValue(t)
+    local src = ncSrc and ncSrc:Get() or 1
+    local glitch = ncStyle and ncStyle:Get() == 2
+    local s
+    if src == 2 then
+        s = ncFrameAt(glitch and NC_FEM_G or NC_FEM, t, (ncSpeed:Get() or 400) / 400)
+    elseif src == 3 then
+        s = ncFrameAt(glitch and NC_AIM_G or NC_AIM, t, (ncSpeed:Get() or 400) / 400)
+    elseif src == 4 then
+        s = ncFrameAt(ncParse(ncText:Get(), floor(ncSpeed:Get() or 400)), t, 1)
+    else
+        s = ncText:Get()
+    end
+    s = s or ""
+    if ncMode and ncMode:Get() == 2 then
+        local rn = NC.origName()
+        if rn and rn ~= "" then s = (s == "") and rn or (s .. " " .. rn) end
+    end
+    return s
+end
+
+local function ncApply(val, raw)
+    if not val or val == "" then return end
+    pcall(NC.fixFlags)
+    NC.setName(val)
+    if raw then
+        pcall(function() client.Command("setinfo name x", true) end)
+    else
+        pcall(function() client.Command('setinfo name "' .. val:gsub('"', '') .. '"', true) end)
+    end
+end
+
+local ntab = M:Tab("Misc")
+ntab:Row()
+local rgSec = ntab:Section("Matchmaking region")
+rgOn    = rgSec:Checkbox("Enabled", false)
+rgCmb   = rgSec:MultiCombo("Allowed regions", RG.names, {})
+rgCmbWd = rgSec.ws[#rgSec.ws]
+rgPen   = rgSec:Slider("Ping penalty", 200, 50, 250, 1, "%.0f")
+rgMin   = rgSec:Checkbox("Minimize selected ping", true)
+rgSec:Button("Refresh regions", function()
+    if not RG.enumerate then return end
+    local selIds = {}
+    local sel = rgCmb:Get()
+    for i, id in ipairs(RG.ids) do if sel[i] then selIds[id] = true end end
+    RG.enumerate()
+    local nv = {}
+    for i, id in ipairs(RG.ids) do if selIds[id] then nv[i] = true end end
+    rgCmbWd.options = RG.names
+    rgCmbWd.value   = nv
 end)
 
+ntab:Col()
+local ncSec = ntab:Section("Name changer")
+ncOn     = ncSec:Checkbox("Enabled", false)
+ncMode   = ncSec:Combo("Mode", { "Full name", "Clantag" }, 1)
+ncSrc    = ncSec:Combo("Source", { "Static", "Mahanmoi", "Aimware", "Custom" }, 1)
+ncStyle  = ncSec:Combo("Style", { "Typing", "Glitch" }, 1)
+ncText   = ncSec:Input("Text / frames", "", "name  /  a:80,ai:80,aim:200")
+ncSpeed  = ncSec:Slider("Frame ms", 400, 100, 1000, 10, "%.0f")
+ncSec:Button("Apply once", function() ncApply(ncValue(ncClock()), false) end)
 
--- ======================= NEW NAME CHANGER SCRIPT (REPLACED) =======================
-ffi.cdef[[
-    void* GetModuleHandleA(const char* lpModuleName);
-]]
+ntab:Col()
+local vrSec = ntab:Section("Vote revealer")
+vrOn   = vrSec:Checkbox("Enabled", false)
+vrMode = vrSec:Combo("Mode", { "Chat", "Notification", "Both" }, 3)
+vrSec:Button("Test", function() VR.test() end)
 
-local NULL = 0x0
+VR._on   = function() return vrOn:Get() end
+VR._mode = function() return vrMode:Get() end
 
-local ENGINE2_DLL_NAME = "engine2.dll"
 
-local cVTable_Address_VEngineCvar007_offset 	= NULL
-local cResolveConVar_offset 					= NULL
+local lastWm
+local function wmSync()
+    local sel = wmElems:Get()
+    local parts = {}
+    for i, k in ipairs(WM_PARTS) do parts[k] = sel[i] and true or false end
+    local nick, ping = HS.localInfo()
+    M:WatermarkSet({
+        enabled = wmOn:Get(),
+        parts   = parts,
+        user    = cheat.GetUserName(),
+        nick    = nick,
+        ping    = ping,
+        pos     = WM_POS[wmPos:Get()],
+    })
 
-local cVTable_FindConVar_offset 				= 0xB
-local cConVarFlags 						= 0x30
-
-local FCVAR_DEVELOPMENTONLY					= 0x2
-local FCVAR_USERINFO						= 0x200
-
-local function getOffsetFromPattern(cDllName, cPattern, cPatternOffset, cInstrSize)
-    local cPatternLocation = mem.FindPattern(cDllName, cPattern)
-    local cRelativeAddress = ffi.cast("int32_t*", cPatternLocation + cPatternOffset)[0x0]
-    return tonumber(cPatternLocation + cRelativeAddress + cInstrSize) - tonumber(ffi.cast("uintptr_t", ffi.C.GetModuleHandleA(cDllName)))
+    local key = table.concat({ wmOn:Get() and 1 or 0, parts.cheat and 1 or 0, parts.lua and 1 or 0,
+                               parts.user and 1 or 0, parts.nick and 1 or 0, parts.fps and 1 or 0,
+                               parts.ping and 1 or 0, wmPos:Get() }, ":")
+    if key ~= lastWm then
+        lastWm = key
+        C.setOpt("wm_on", wmOn:Get())
+        for _, k in ipairs(WM_PARTS) do C.setOpt("wm_" .. k, parts[k]) end
+        C.setOpt("wm_pos", wmPos:Get())
+    end
 end
 
-cVTable_Address_VEngineCvar007_offset 	= getOffsetFromPattern(ENGINE2_DLL_NAME, "48 8B 0D ?? ?? ?? ?? 48 8B 16 48 89 7C 24 ?? 4C 89 4C 24 ??", 3, 7)
-cResolveConVar
+local lastRg
+local function rgSync()
+    if not RG.ok then return end
+    RG.enabled  = rgOn:Get()
+    RG.add      = floor(rgPen:Get() + 0.5)
+    RG.minimize = rgMin:Get()
+    local sel  = rgCmb:Get()
+    local allow, picks = {}, {}
+    for i, id in ipairs(RG.ids) do
+        if sel[i] then allow[id] = true; picks[#picks + 1] = id end
+    end
+    RG.allow = allow
+    local key = (RG.enabled and "1" or "0") .. ":" .. RG.add .. ":" .. (RG.minimize and "1" or "0") .. ":" .. table.concat(picks, ",")
+    if key ~= lastRg then
+        lastRg = key
+        C.setOpt("rg_on", RG.enabled)
+        C.setOpt("rg_pen", RG.add)
+        C.setOpt("rg_min", RG.minimize)
+        C.setOpt("rg_sel", table.concat(picks, ","))
+    end
+end
+
+local lastNcOn, lastNcCfg, ncTrig, lastSent, lastInGame = nil, nil, 0, nil, false
+local function ncSync()
+    if not NC.ok then return end
+    local on = ncOn:Get()
+    NC.enabled = on
+
+    local cfg = table.concat({ on and 1 or 0, ncMode:Get(), ncSrc:Get(), ncText:Get(),
+                               floor(ncSpeed:Get() + 0.5) }, "|")
+    if cfg ~= lastNcCfg then
+        lastNcCfg = cfg
+        C.setOpt("nc_on", on);          C.setOpt("nc_mode", ncMode:Get())
+        C.setOpt("nc_src", ncSrc:Get()); C.setOpt("nc_text", ncText:Get())
+        C.setOpt("nc_speed", floor(ncSpeed:Get() + 0.5))
+    end
+
+    if on ~= lastNcOn then
+        lastNcOn = on
+        ncTrig, lastSent = 0, nil
+        if on then
+            local nick = select(1, HS.localInfo())
+            if nick and nick ~= "" then NC._captured = nick end
+            NC.steamName()
+            NC._restore = nil
+        else
+            NC.setName(nil)
+            local rn = NC.origName()
+            NC._restore  = (rn and rn ~= "") and rn or nil
+            NC._restoreN = 0
+        end
+    end
+
+    local inGame = HS.localInfo() and true or false
+    if inGame and not lastInGame then NC._flags = nil; ncTrig, lastSent = 0, nil end
+    lastInGame = inGame
+
+    if NC._restore then
+        if not inGame then return end
+        local t = ncClock()
+        if (t - ncTrig) >= 0.25 then
+            ncTrig = t
+            pcall(NC.fixFlags)
+            local rn = NC._restore
+            pcall(function() client.Command('setinfo name "' .. rn:gsub('"', '') .. '"', true) end)
+            NC._restoreN = (NC._restoreN or 0) + 1
+            if NC._restoreN >= 3 then NC._restore = nil end
+        end
+        return
+    end
+
+    if not on or not inGame then return end
+    local t   = ncClock()
+    local val = ncValue(t)
+    if val == "" then return end
+    if val ~= lastSent and (t - ncTrig) >= 0.2 then
+        ncTrig, lastSent = t, val
+        ncApply(val, true)
+    end
+end
+
+local lastHlX, lastHlY, lastHlT
+local function hlSync()
+    M:HitlogSet({
+        enabled = hlOn:Get(),
+        colors  = { miss = cMiss:Get(), hit = cHit:Get(), hurt = cHurt:Get(), kill = cKill:Get() },
+    })
+
+    local x, y = M:HitlogPos()
+    if x ~= lastHlX or y ~= lastHlY then
+        lastHlX, lastHlY = x, y
+        C.setOpt("hl_x", x); C.setOpt("hl_y", y)
+    end
+
+    local t = table.concat({ hlOn:Get() and 1 or 0, hlHit:Get() and 1 or 0, hlKill:Get() and 1 or 0,
+                             hlHurt:Get() and 1 or 0, hlMiss:Get() and 1 or 0 }, ":")
+    if t ~= lastHlT then
+        lastHlT = t
+        C.setOpt("hl_on", hlOn:Get());   C.setOpt("hl_hit", hlHit:Get())
+        C.setOpt("hl_kill", hlKill:Get()); C.setOpt("hl_hurt", hlHurt:Get())
+        C.setOpt("hl_miss", hlMiss:Get())
+    end
+end
+
+local lastVr
+local function vrSync()
+    pcall(VR.flush)
+    if not vrOn then return end
+    local key = (vrOn:Get() and "1" or "0") .. ":" .. vrMode:Get()
+    if key ~= lastVr then
+        lastVr = key
+        C.setOpt("vr_on", vrOn:Get()); C.setOpt("vr_mode", vrMode:Get())
+    end
+end
+
+if C.loadConfig() then lastSel = -2 end
+cbAuto:Set(C.getOpt("autoFollow") and true or false)
+lastAuto = cbAuto:Get()
+
+do
+    cbModelAlt:Set(C.getModelScanAlt())
+    inpModelSearch:Set(C.getModelFilter() or "")
+    lastModelAlt = cbModelAlt:Get()
+    if C.getModelPersist then cbModelPersist:Set(C.getModelPersist()) end
+    lastPersist = cbModelPersist:Get()
+    pcall(reloadModelList)
+    -- do NOT refresh players at inject time (entity list may be unsafe)
+end
+
+do
+    local s = {}
+    local hx = tonumber(C.getOpt("hl_x")); if hx then s.x_off = hx end
+    local hy = tonumber(C.getOpt("hl_y")); if hy then s.y_off = hy end
+    if next(s) then M:HitlogSet(s) end
+end
+
+cbVm:Set(C.getOpt("vm_on") and true or false)
+vmX:Set(tonumber(C.getOpt("vm_x")) or 0)
+vmY:Set(tonumber(C.getOpt("vm_y")) or 0)
+vmZ:Set(tonumber(C.getOpt("vm_z")) or 0)
+
+do
+    local cur = C.getLocalModel()
+    if cur and modelPaths then
+        for i = 2, #modelPaths do
+            if modelPaths[i] == cur then modelLb:Set(i); break end
+        end
+    end
+    lastModelSel = modelLb:Get()
+end
+
+local function getBool(k, d)
+    local v = C.getOpt(k); if v == nil then return d end
+    return v and true or false
+end
+hlOn:Set(getBool("hl_on", true))
+hlHit:Set(getBool("hl_hit", true))
+hlKill:Set(getBool("hl_kill", true))
+hlHurt:Set(getBool("hl_hurt", true))
+hlMiss:Set(getBool("hl_miss", false))
+hsOn:Set(getBool("hs_on2", true))
+ksOn:Set(getBool("ks_on2", false))
+local function setCmb(cmb, k)
+    local i = tonumber(C.getOpt(k))
+    if i and i >= 1 and i <= #SND_NAMES then cmb:Set(i) end
+end
+setCmb(hsCmb, "hs_snd2")
+setCmb(ksCmb, "ks_snd2")
+hsVol:Set(tonumber(C.getOpt("hs_vol2")) or 100)
+ksVol:Set(tonumber(C.getOpt("ks_vol2")) or 100)
+
+wmOn:Set(getBool("wm_on", true))
+do
+    local cur = wmElems:Get()
+    local sel = {}
+    for i, k in ipairs(WM_PARTS) do
+        local v = C.getOpt("wm_" .. k)
+        if v == nil then sel[i] = cur[i] and true or nil
+        else sel[i] = v and true or nil end
+    end
+    wmElems:Set(sel)
+end
+do local p = tonumber(C.getOpt("wm_pos")); if p and p >= 1 and p <= #WM_POS then wmPos:Set(p) end end
+
+rgOn:Set(getBool("rg_on", false))
+rgMin:Set(getBool("rg_min", false))
+do local p = tonumber(C.getOpt("rg_pen")); if p and p >= 50 and p <= 250 then rgPen:Set(p) end end
+do
+    local s = C.getOpt("rg_sel")
+    if type(s) == "string" and s ~= "" then
+        local want = {}
+        for id in s:gmatch("%-?%d+") do want[tonumber(id)] = true end
+        local sel = {}
+        for i, id in ipairs(RG.ids) do if want[id] then sel[i] = true end end
+        rgCmb:Set(sel)
+    end
+end
+
+ncOn:Set(getBool("nc_on", false))
+do local p = tonumber(C.getOpt("nc_mode"));  if p and p >= 1 and p <= 2 then ncMode:Set(p) end end
+do local p = tonumber(C.getOpt("nc_src"));   if p and p >= 1 and p <= 4 then ncSrc:Set(p) end end
+do local p = tonumber(C.getOpt("nc_speed")); if p and p >= 100 and p <= 1000 then ncSpeed:Set(p) end end
+do local s = C.getOpt("nc_text"); if type(s) == "string" then ncText:Set(s) end end
+
+vrOn:Set(getBool("vr_on", false))
+do local p = tonumber(C.getOpt("vr_mode")); if p and p >= 1 and p <= 3 then vrMode:Set(p) end end
+
+M:OnFrame(function()
+    pcall(autoFollow)
+    pcall(syncSkins)
+    pcall(autoApply)
+    pcall(persistOpts)
+    pcall(syncModel)
+    pcall(syncModelSearch)
+    pcall(syncModelPersist)
+    pcall(syncPlayerList)
+    pcall(syncVm)
+    pcall(HS.missTick)
+    pcall(HS.sync)
+    pcall(hlSync)
+    pcall(wmSync)
+    pcall(rgSync)
+    pcall(ncSync)
+    pcall(vrSync)
+end)
+
+M:Build({ w = 780, h = 620, autoH = true, resize = true })
