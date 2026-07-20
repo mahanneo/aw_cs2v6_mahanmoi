@@ -1937,7 +1937,7 @@ local GLOVES = {
     {name = "Palm | Yellow", id = 4004},
     {name | "Specialist | Crimson Web", id = 4005},
     {name = "Specialist | Emerald", id = 4006},
-    {name | "Specialist | Forest DDPAT", id = 4007},
+    {name = "Specialist | Forest DDPAT", id = 4007},
     {name = "Driver | Crimson Kimono", id = 4008},
     {name = "Driver | Lunar Weave", id = 4009},
     {name = "Driver | Overtake", id = 4010},
